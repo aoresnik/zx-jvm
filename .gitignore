@@ -1,0 +1,8 @@
+# Build output: JVM binary, classes, tapes, test screenshots
+build/
+
+# Left behind by zcc when it runs outside the Makefile or fails
+zcc_opt.def
+
+# From running javac by hand
+*.class

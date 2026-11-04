@@ -1,0 +1,163 @@
+# zx-jvm
+
+A very small JVM for the ZX Spectrum. It reads a real `.class` file produced by `javac`, loaded from tape as a CODE block, and interprets its bytecode on the Z80.
+
+It is basic because of the constraints of the target machine: currently enough to run programs like [`examples/Fibonacci.java`](examples/Fibonacci.java), which prints the first 15 Fibonacci numbers.
+
+Of course it was vibecoded.
+
+## Requirements
+
+- [z88dk](https://z88dk.org/), with `zcc` and `appmake` on your `PATH`
+- A JDK, version 11 or newer
+- [Fuse](https://fuse-emulator.sourceforge.net/) to run the tapes on an emulated Spectrum
+- GNU Make
+
+Tested with z88dk 2.0, OpenJDK 17 and Fuse 1.6.0.
+
+## Quick start
+
+```sh
+make        # builds build/Fibonacci.tap and build/zx-jvm.tap
+make run    # opens build/Fibonacci.tap in Fuse
+```
+
+The program prints 0 to 377 and returns to BASIC with `0 OK, 40:1`.
+
+## Running your own class
+
+Your class must be in the default package and stay within the [supported features](#what-is-supported).
+
+### Build a complete tape
+
+This is the simplest way, and gives you a tape that loads and runs without any prompt:
+
+```sh
+make CLASS=MyProgram JAVA_DIR=path/to/source
+```
+
+The result is `build/MyProgram.tap`. To open it in Fuse straight away, use the `run` target with the same arguments.
+
+### Use the JVM-only tape
+
+`build/zx-jvm.tap` contains the JVM without a class. After loading, it shows `Insert class tape, press a key` and then loads the next CODE block as the class.
+
+First, put the class in a tape of its own:
+
+```sh
+javac -d build MyProgram.java
+appmake +zx --noloader --org 49152 -b build/MyProgram.class --blockname MyProgram -o MyProgram.tap
+```
+
+Then do one of the following:
+
+- **Swap tapes:** load `zx-jvm.tap`. At the prompt, open `MyProgram.tap` (F7 in Fuse) and press a key.
+- **Join the tapes:** run `cat build/zx-jvm.tap MyProgram.tap > combined.tap` and load the result. You still press a key at the prompt.
+
+The class always loads at 49152, whatever address its block was saved with.
+
+## What is supported
+
+The JVM runs `public static void main(String[])` from one class.
+
+| Area | Supported |
+|---|---|
+| Constants | `iconst_m1` to `iconst_5`, `bipush`, `sipush`, `ldc` (int only) |
+| Local variables | `iload`, `istore` and their `_0` to `_3` forms, `iinc` |
+| Arithmetic | `iadd`, `isub`, with 32-bit wraparound |
+| Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `goto` |
+| Return | `return` |
+| Runtime | `System.out.println(int)` |
+
+Everything else is unsupported, including multiplication and division, other types, strings, arrays, objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
+
+Unsupported features stop the program with an error rather than misbehaving:
+
+```
+JVM: unsupported opcode 104 at pc 15
+```
+
+The Spectrum still shows `0 OK` after an error, because the JVM always returns to BASIC normally.
+
+Limits:
+
+- 256 constant pool entries
+- 64 slots for local variables and the operand stack together
+- Just under 16 KB for the class file
+
+## How it works
+
+The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
+
+```basic
+10 CLEAR 32767
+20 LOAD ""CODE
+30 LOAD ""CODE 49152
+40 RANDOMIZE USR 32768
+```
+
+| Address | Contents |
+|---|---|
+| 32768 | JVM, about 6.6 KB |
+| 49152 | Class file |
+
+The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`. Output goes through the Spectrum ROM's print routine, and `System.out` is recognised by name rather than being a real object.
+
+### Compiler pitfalls
+
+The JVM is compiled with sccz80, which miscompiled some valid C in this project. These are worth remembering when changing `src/zxjvm.c`, especially 32-bit code:
+
+| C code | What went wrong | Used instead |
+|---|---|---|
+| `0UL - v` | Computes `v - 0` | `~v + 1UL` |
+| `v % 10UL` | Divides only the low 16 bits of `v` | Subtracting powers of ten |
+| `(signed char)` cast of a byte | Loses the sign | The `s1()` helper |
+
+## Tests
+
+```sh
+make test               # run all tests
+tests/run.sh Edge       # run one test
+```
+
+Each test builds a tape, runs it in Fuse, and compares the final screen pixel by pixel with an image in `tests/expected/`. A test also fails if the screen never settles.
+
+| Test | What it covers |
+|---|---|
+| `Fibonacci` | The example program |
+| `Edge` | Int limits, overflow, negative constants, branches |
+| `Scroll` | 32-bit wraparound, a countdown loop, scrolling past a full screen |
+| `BadOpcode` | Error for an unsupported opcode |
+| `BadMethod` | Error for `println` with a string |
+| `NoMain` | Error for a class without `main` |
+
+The tests also need an X display, `xdotool` and ImageMagick. Fuse windows open and take focus during the run, and clicking over one can cause a false failure.
+
+To start Fuse and capture its screen, the tests use the script from the [`zx-spectrum-run` skill](#claude-code-skill). Set `ZX_RUN` to use a script of your own with the same options.
+
+The reference images depend on how Fuse draws its window, so a Fuse upgrade or display change can make tests fail even though the JVM is fine. To regenerate an image, run `tests/run.sh --update Edge` and check the new image by eye.
+
+## Claude Code skill
+
+[`.claude/skills/zx-spectrum-run`](.claude/skills/zx-spectrum-run/SKILL.md) lets Claude Code run Spectrum programs and see their output. It starts Fuse, loads the program, waits for the screen to settle and saves a screenshot.
+
+You can also run its script directly:
+
+```sh
+.claude/skills/zx-spectrum-run/scripts/zx-run.sh --out screen.png build/Fibonacci.tap
+```
+
+## Project layout
+
+```
+.claude/skills/  Claude Code skill for running programs in Fuse
+examples/        Example Java programs
+src/zxjvm.c      The JVM
+tools/MkTap.java Builds the tape images
+tests/           Test programs, runner and reference images
+build/           Generated files
+```
+
+## Status
+
+Tested in Fuse on emulated 48K and 128K machines, but not on real Spectrum hardware.
