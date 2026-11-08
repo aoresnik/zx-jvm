@@ -24,7 +24,7 @@ fi
 if [ $# -gt 0 ]; then
     names=("$@")
 else
-    names=(Fibonacci Edge Scroll BadOpcode BadMethod NoMain)
+    names=(Fibonacci HelloWorld Edge Scroll Strings LongString BadOpcode BadMethod NoMain)
 fi
 
 [ -x "$ZX_RUN" ] || { echo "cannot run $ZX_RUN (set ZX_RUN)" >&2; exit 1; }
@@ -33,7 +33,7 @@ mkdir -p "$BUILD"
 failed=0
 for name in "${names[@]}"; do
     dir=tests
-    [ "$name" = Fibonacci ] && dir=examples
+    [ -f "examples/$name.java" ] && dir=examples
     if ! make --no-print-directory CLASS="$name" JAVA_DIR="$dir" BUILD="$BUILD" >"$BUILD.log" 2>&1; then
         cat "$BUILD.log"
         echo "FAIL $name: build failed"

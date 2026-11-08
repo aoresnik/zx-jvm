@@ -2,7 +2,7 @@
 
 A very small JVM for the ZX Spectrum. It reads a real `.class` file produced by `javac`, loaded from tape as a CODE block, and interprets its bytecode on the Z80.
 
-It is basic because of the constraints of the target machine: currently enough to run programs like [`examples/Fibonacci.java`](examples/Fibonacci.java), which prints the first 15 Fibonacci numbers.
+It is basic because of the constraints of the target machine: currently enough to run programs like [`examples/Fibonacci.java`](examples/Fibonacci.java), which prints the first 15 Fibonacci numbers, and to print constant strings.
 
 Of course it was vibecoded.
 
@@ -23,6 +23,12 @@ make run    # opens build/Fibonacci.tap in Fuse
 ```
 
 The program prints 0 to 377 and returns to BASIC with `0 OK, 40:1`.
+
+For the classic first program, [`examples/HelloWorld.java`](examples/HelloWorld.java), which prints `Hello world from Java`:
+
+```sh
+make run CLASS=HelloWorld
+```
 
 ## Running your own class
 
@@ -62,26 +68,36 @@ The JVM runs `public static void main(String[])` from one class.
 
 | Area | Supported |
 |---|---|
-| Constants | `iconst_m1` to `iconst_5`, `bipush`, `sipush`, `ldc` (int only) |
-| Local variables | `iload`, `istore` and their `_0` to `_3` forms, `iinc` |
+| Constants | `iconst_m1` to `iconst_5`, `bipush`, `sipush`, `ldc` (int and String), `aconst_null` |
+| Local variables | `iload`, `istore`, `aload`, `astore` and their `_0` to `_3` forms, `iinc` |
 | Arithmetic | `iadd`, `isub`, with 32-bit wraparound |
 | Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `goto` |
 | Return | `return` |
-| Runtime | `System.out.println(int)` |
+| Runtime | `System.out.print` and `println` of `int` and `String`, and `println()` |
 
-Everything else is unsupported, including multiplication and division, other types, strings, arrays, objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
+Strings are limited to constants, which can be stored in local variables. Constant expressions such as `"a" + "b"` work because `javac` joins them, but `"x = " + x` needs `invokedynamic` and is unsupported; print the parts separately instead.
+
+Output uses the Spectrum character set, which is close to ASCII:
+
+- `\n` starts a new line.
+- `^`, `` ` `` and code 127 print as `↑`, `£` and `?`.
+- Other control characters and every non-ASCII character print as one `?` each. Characters outside the Basic Multilingual Plane, such as emoji, print as `??`, because Java stores them as two `char`s.
+- Long lines wrap at 32 columns, and the screen scrolls without the `scroll?` prompt.
+
+Everything else is unsupported, including multiplication and division, other types, `char` output, string operations, arrays, objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
 
 Unsupported features stop the program with an error rather than misbehaving:
 
 ```
 JVM: unsupported opcode 104 at pc 15
+JVM: unsupported method java/io/PrintStream.println:(C)V
 ```
 
 The Spectrum still shows `0 OK` after an error, because the JVM always returns to BASIC normally.
 
 Limits:
 
-- 256 constant pool entries
+- 256 constant pool entries, and each distinct string takes two
 - 64 slots for local variables and the operand stack together
 - Just under 16 KB for the class file
 
@@ -98,10 +114,14 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 
 | Address | Contents |
 |---|---|
-| 32768 | JVM, about 6.6 KB |
+| 32768 | JVM, about 8 KB |
 | 49152 | Class file |
 
-The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`. Output goes through the Spectrum ROM's print routine, and `System.out` is recognised by name rather than being a real object.
+The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`, and a reference in the same slot holds a 16-bit address, with `null` as 0.
+
+A string is its `CONSTANT_Utf8` entry in the class file, so strings need no heap or copying. `System.out` is a one-byte object inside the JVM.
+
+Runtime methods are written in C and listed in the `natives` table in `src/zxjvm.c`, with their class, name, descriptor and handler. The first call from each call site looks the method up by name, and later calls reuse the result. To add a method, write a handler and add a row. Output goes through the Spectrum ROM's print routine.
 
 ### Compiler pitfalls
 
@@ -124,11 +144,13 @@ Each test builds a tape, runs it in Fuse, and compares the final screen pixel by
 
 | Test | What it covers |
 |---|---|
-| `Fibonacci` | The example program |
+| `Fibonacci`, `HelloWorld` | The example programs |
 | `Edge` | Int limits, overflow, negative constants, branches |
 | `Scroll` | 32-bit wraparound, a countdown loop, scrolling past a full screen |
+| `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
+| `LongString` | Scrolling caused only by wrapped text |
 | `BadOpcode` | Error for an unsupported opcode |
-| `BadMethod` | Error for `println` with a string |
+| `BadMethod` | Error for an unsupported method, `println(char)` |
 | `NoMain` | Error for a class without `main` |
 
 The tests also need an X display, `xdotool` and ImageMagick. Fuse windows open and take focus during the run, and clicking over one can cause a false failure.

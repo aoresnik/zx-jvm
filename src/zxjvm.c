@@ -4,7 +4,11 @@
  * Runs public static void main(String[]) of a single .class file that has
  * already been loaded into memory at CLASS_ADDR. Bytecode is interpreted
  * directly from the class file image; there is no verifier, no heap and no
- * class loading. The only runtime method is System.out.println(int).
+ * class loading. Runtime methods are implemented in C, listed in natives[].
+ *
+ * A reference is the 16-bit address of an object, held in a 32-bit slot, and
+ * null is 0. A String is its CONSTANT_Utf8 entry in the class file, so the
+ * first byte of an object is TAG_UTF8 for a String or an OBJ_* kind otherwise.
  *
  * Memory map: 32768 this program, 49152 the class file.
  */
@@ -18,17 +22,22 @@
 #include <stdlib.h>
 
 #define CLASS_ADDR ((unsigned char *)49152)
-#define SCR_CT     ((unsigned char *)23692)
 
 #define MAX_CP     256  /* constant pool entries */
 #define MAX_FRAME  64   /* locals + operand stack, in 32-bit slots */
 
 #define ACC_STATIC 0x0008
-#define OBJ_OUT    1L   /* the value of the reference System.out */
 
 #define TAG_UTF8    1
 #define TAG_INTEGER 3
+#define TAG_STRING  8
 
+#define OBJ_PRINTSTREAM 0x80
+
+#define REF(p)   ((jint)(unsigned int)(p))
+#define DEREF(r) ((unsigned char *)(unsigned int)(r))
+
+#define OP_ACONST_NULL   0x01
 #define OP_ICONST_M1     0x02
 #define OP_ICONST_0      0x03
 #define OP_ICONST_1      0x04
@@ -40,15 +49,25 @@
 #define OP_SIPUSH        0x11
 #define OP_LDC           0x12
 #define OP_ILOAD         0x15
+#define OP_ALOAD         0x19
 #define OP_ILOAD_0       0x1A
 #define OP_ILOAD_1       0x1B
 #define OP_ILOAD_2       0x1C
 #define OP_ILOAD_3       0x1D
+#define OP_ALOAD_0       0x2A
+#define OP_ALOAD_1       0x2B
+#define OP_ALOAD_2       0x2C
+#define OP_ALOAD_3       0x2D
 #define OP_ISTORE        0x36
+#define OP_ASTORE        0x3A
 #define OP_ISTORE_0      0x3B
 #define OP_ISTORE_1      0x3C
 #define OP_ISTORE_2      0x3D
 #define OP_ISTORE_3      0x3E
+#define OP_ASTORE_0      0x4B
+#define OP_ASTORE_1      0x4C
+#define OP_ASTORE_2      0x4D
+#define OP_ASTORE_3      0x4E
 #define OP_IADD          0x60
 #define OP_ISUB          0x64
 #define OP_IINC          0x84
@@ -73,7 +92,10 @@ typedef long jint;      /* sccz80: int is 16 bits, long is 32 bits */
 
 static unsigned char *cp[MAX_CP];
 static unsigned int cp_count;
+static unsigned char resolved[MAX_CP];  /* Methodref -> natives[] index + 1 */
 static jint frame[MAX_FRAME];
+
+static unsigned char system_out[] = { OBJ_PRINTSTREAM };
 
 static unsigned long powers_of_ten[] = {
     1000000000UL, 100000000UL, 10000000UL, 1000000UL, 100000UL,
@@ -99,6 +121,8 @@ static void rom_init(void)
 static void rom_putc(unsigned char c) __z88dk_fastcall
 {
 #asm
+    ld   a,255
+    ld   (23692),a  ; SCR-CT: never stop at the scroll? prompt, even when wrapping
     ld   a,l
     rst  16
 #endasm
@@ -112,7 +136,6 @@ static void print_str(char *s)
 
 static void print_newline(void)
 {
-    *SCR_CT = 255;  /* never stop at the scroll? prompt */
     rom_putc(13);
 }
 
@@ -233,6 +256,60 @@ static int member_is(unsigned int index, char *cls, char *name, char *desc)
         && utf8_is(u2(nat + 3), desc);
 }
 
+/*
+ * Prints a String or "null". Only printable ASCII is shown as itself: the ROM
+ * would treat other bytes as control codes, graphics or keywords. Each other
+ * character becomes one ?, whatever the length of its modified UTF-8 encoding.
+ */
+static void print_string(jint ref)
+{
+    unsigned char *s;
+    unsigned int len;
+    unsigned char c;
+
+    if (ref == 0L) {
+        print_str("null");
+        return;
+    }
+    s = DEREF(ref);
+    len = u2(s + 1);
+    s += 3;
+    while (len-- != 0) {
+        c = *s++;
+        if (c == '\n')
+            print_newline();
+        else if (c >= 32 && c < 127)
+            rom_putc(c);
+        else if ((c & 0xC0) != 0x80)    /* not a continuation byte */
+            rom_putc('?');
+    }
+}
+
+static void print_utf8(unsigned int index)
+{
+    print_string(REF(cp[index]));
+}
+
+/* Stops with the Fieldref/Methodref, written as javap does: class.name:descriptor */
+static void die_member(char *what, unsigned int index)
+{
+    unsigned char *ref;
+    unsigned char *nat;
+
+    ref = cp[index];
+    nat = cp[u2(ref + 3)];
+    print_str("JVM: unsupported ");
+    print_str(what);
+    rom_putc(' ');
+    print_utf8(u2(cp[u2(ref + 1)] + 1));
+    rom_putc('.');
+    print_utf8(u2(nat + 1));
+    rom_putc(':');
+    print_utf8(u2(nat + 3));
+    print_newline();
+    exit(1);
+}
+
 /* All sizes fit 16 bits on this machine, so only the low half of a u4 is read. */
 static unsigned char *skip_attribute(unsigned char *p)
 {
@@ -273,6 +350,75 @@ static void find_main(unsigned char *p)
     die("no main method");
 }
 
+/* ---- Runtime methods ---- */
+
+/* args points to the receiver, followed by the arguments */
+typedef void (*native_fn)(jint *args);
+
+struct native {
+    char *cls;
+    char *name;
+    char *desc;
+    unsigned char slots;    /* operand stack slots taken, including the receiver */
+    native_fn fn;
+};
+
+static void native_print_int(jint *args)
+{
+    print_int(args[1]);
+}
+
+static void native_println_int(jint *args)
+{
+    print_int(args[1]);
+    print_newline();
+}
+
+static void native_print_string(jint *args)
+{
+    print_string(args[1]);
+}
+
+static void native_println_string(jint *args)
+{
+    print_string(args[1]);
+    print_newline();
+}
+
+static void native_println(jint *args)
+{
+    print_newline();
+}
+
+static struct native natives[] = {
+    { "java/io/PrintStream", "print",   "(I)V",                  2, native_print_int },
+    { "java/io/PrintStream", "println", "(I)V",                  2, native_println_int },
+    { "java/io/PrintStream", "print",   "(Ljava/lang/String;)V", 2, native_print_string },
+    { "java/io/PrintStream", "println", "(Ljava/lang/String;)V", 2, native_println_string },
+    { "java/io/PrintStream", "println", "()V",                   1, native_println }
+};
+
+#define NATIVE_COUNT (sizeof(natives) / sizeof(natives[0]))
+
+/* Looks a Methodref up in natives[] once, then remembers the result. */
+static struct native *resolve_method(unsigned int index)
+{
+    unsigned char i;
+    struct native *m;
+
+    if (resolved[index] == 0) {
+        for (i = 0; i < NATIVE_COUNT; i++) {
+            m = &natives[i];
+            if (member_is(index, m->cls, m->name, m->desc)) {
+                resolved[index] = i + 1;
+                return m;
+            }
+        }
+        die_member("method", index);
+    }
+    return &natives[resolved[index] - 1];
+}
+
 /* ---- Interpreter ---- */
 
 static int branch_taken(unsigned char op, jint a, jint b)
@@ -295,17 +441,22 @@ static void run(void)
     jint a;
     jint b;
     unsigned char op;
+    struct native *m;
 
     if (max_stack + max_locals > MAX_FRAME)
         die("frame too big");
 
-    frame[0] = 0L;      /* args: arrays do not exist here, so null is unobservable */
+    frame[0] = 0L;      /* args: arrays do not exist here, so main gets null */
     sp = frame + max_locals;
     pc = code;
 
     for (;;) {
         op = *pc;
         switch (op) {
+        case OP_ACONST_NULL:
+            *sp++ = 0L;
+            pc++;
+            break;
         case OP_ICONST_M1: case OP_ICONST_0: case OP_ICONST_1: case OP_ICONST_2:
         case OP_ICONST_3: case OP_ICONST_4: case OP_ICONST_5:
             *sp++ = (jint)((int)op - OP_ICONST_0);
@@ -321,12 +472,15 @@ static void run(void)
             break;
         case OP_LDC:
             e = cp[pc[1]];
-            if (*e != TAG_INTEGER)
-                die("ldc: only int supported");
-            *sp++ = ((unsigned long)u2(e + 1) << 16) | (unsigned long)u2(e + 3);
+            if (*e == TAG_INTEGER)
+                *sp++ = ((unsigned long)u2(e + 1) << 16) | (unsigned long)u2(e + 3);
+            else if (*e == TAG_STRING)
+                *sp++ = REF(cp[u2(e + 1)]);
+            else
+                die("ldc: only int and String supported");
             pc += 2;
             break;
-        case OP_ILOAD:
+        case OP_ILOAD: case OP_ALOAD:   /* references and ints share the 32-bit slots */
             *sp++ = frame[pc[1]];
             pc += 2;
             break;
@@ -334,12 +488,20 @@ static void run(void)
             *sp++ = frame[op - OP_ILOAD_0];
             pc++;
             break;
-        case OP_ISTORE:
+        case OP_ALOAD_0: case OP_ALOAD_1: case OP_ALOAD_2: case OP_ALOAD_3:
+            *sp++ = frame[op - OP_ALOAD_0];
+            pc++;
+            break;
+        case OP_ISTORE: case OP_ASTORE:
             frame[pc[1]] = *--sp;
             pc += 2;
             break;
         case OP_ISTORE_0: case OP_ISTORE_1: case OP_ISTORE_2: case OP_ISTORE_3:
             frame[op - OP_ISTORE_0] = *--sp;
+            pc++;
+            break;
+        case OP_ASTORE_0: case OP_ASTORE_1: case OP_ASTORE_2: case OP_ASTORE_3:
+            frame[op - OP_ASTORE_0] = *--sp;
             pc++;
             break;
         case OP_IADD:
@@ -380,17 +542,16 @@ static void run(void)
             return;
         case OP_GETSTATIC:
             if (!member_is(u2(pc + 1), "java/lang/System", "out", "Ljava/io/PrintStream;"))
-                die("unsupported static field");
-            *sp++ = OBJ_OUT;
+                die_member("field", u2(pc + 1));
+            *sp++ = REF(system_out);
             pc += 3;
             break;
         case OP_INVOKEVIRTUAL:
-            if (!member_is(u2(pc + 1), "java/io/PrintStream", "println", "(I)V"))
-                die("unsupported method");
-            a = *--sp;
-            --sp;       /* the PrintStream, which can only be System.out */
-            print_int(a);
-            print_newline();
+            m = resolve_method(u2(pc + 1));
+            sp = &sp[-(int)m->slots];
+            if (*sp == 0L)
+                die("null pointer");
+            m->fn(sp);
             pc += 3;
             break;
         default:
