@@ -71,11 +71,11 @@ The JVM runs `public static void main(String[])` from one class.
 | Constants | `iconst_m1` to `iconst_5`, `bipush`, `sipush`, `ldc` (int and String), `aconst_null` |
 | Local variables | `iload`, `istore`, `aload`, `astore` and their `_0` to `_3` forms, `iinc` |
 | Arithmetic | `iadd`, `isub`, with 32-bit wraparound |
-| Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `goto` |
+| Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `ifnull`, `ifnonnull`, `if_acmpeq`, `if_acmpne`, `goto` |
 | Return | `return` |
 | Runtime | `System.out.print` and `println` of `int` and `String`, and `println()` |
 
-Strings are limited to constants, which can be stored in local variables. Constant expressions such as `"a" + "b"` work because `javac` joins them, but `"x = " + x` needs `invokedynamic` and is unsupported; print the parts separately instead.
+Strings are limited to constants, which can be stored in local variables and compared with `==` and `!=`. As in Java, equal string literals in a class are the same object. Constant expressions such as `"a" + "b"` work because `javac` joins them, but `"x = " + x` needs `invokedynamic` and is unsupported; print the parts separately instead.
 
 Output uses the Spectrum character set, which is close to ASCII:
 
@@ -149,6 +149,7 @@ Each test builds a tape, runs it in Fuse, and compares the final screen pixel by
 | `Scroll` | 32-bit wraparound, a countdown loop, scrolling past a full screen |
 | `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
 | `LongString` | Scrolling caused only by wrapped text |
+| `References` | `null` checks and comparing references |
 | `BadOpcode` | Error for an unsupported opcode |
 | `BadMethod` | Error for an unsupported method, `println(char)` |
 | `NoMain` | Error for a class without `main` |

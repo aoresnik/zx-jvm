@@ -83,10 +83,14 @@
 #define OP_IF_ICMPGE     0xA2
 #define OP_IF_ICMPGT     0xA3
 #define OP_IF_ICMPLE     0xA4
+#define OP_IF_ACMPEQ     0xA5
+#define OP_IF_ACMPNE     0xA6
 #define OP_GOTO          0xA7
 #define OP_RETURN        0xB1
 #define OP_GETSTATIC     0xB2
 #define OP_INVOKEVIRTUAL 0xB6
+#define OP_IFNULL        0xC6
+#define OP_IFNONNULL     0xC7
 
 typedef long jint;      /* sccz80: int is 16 bits, long is 32 bits */
 
@@ -424,8 +428,10 @@ static struct native *resolve_method(unsigned int index)
 static int branch_taken(unsigned char op, jint a, jint b)
 {
     switch (op) {
-    case OP_IFEQ: case OP_IF_ICMPEQ: return a == b;
-    case OP_IFNE: case OP_IF_ICMPNE: return a != b;
+    case OP_IFEQ: case OP_IF_ICMPEQ: case OP_IF_ACMPEQ: case OP_IFNULL:
+        return a == b;
+    case OP_IFNE: case OP_IF_ICMPNE: case OP_IF_ACMPNE: case OP_IFNONNULL:
+        return a != b;
     case OP_IFLT: case OP_IF_ICMPLT: return a < b;
     case OP_IFGE: case OP_IF_ICMPGE: return a >= b;
     case OP_IFGT: case OP_IF_ICMPGT: return a > b;
@@ -520,6 +526,7 @@ static void run(void)
             break;
         case OP_IFEQ: case OP_IFNE: case OP_IFLT:
         case OP_IFGE: case OP_IFGT: case OP_IFLE:
+        case OP_IFNULL: case OP_IFNONNULL:  /* null is 0 */
             a = *--sp;
             if (branch_taken(op, a, 0L))
                 pc += (int)u2(pc + 1);
@@ -528,6 +535,7 @@ static void run(void)
             break;
         case OP_IF_ICMPEQ: case OP_IF_ICMPNE: case OP_IF_ICMPLT:
         case OP_IF_ICMPGE: case OP_IF_ICMPGT: case OP_IF_ICMPLE:
+        case OP_IF_ACMPEQ: case OP_IF_ACMPNE:
             b = *--sp;
             a = *--sp;
             if (branch_taken(op, a, b))

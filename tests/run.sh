@@ -24,7 +24,7 @@ fi
 if [ $# -gt 0 ]; then
     names=("$@")
 else
-    names=(Fibonacci HelloWorld Edge Scroll Strings LongString BadOpcode BadMethod NoMain)
+    names=(Fibonacci HelloWorld Edge Scroll Strings LongString References BadOpcode BadMethod NoMain)
 fi
 
 [ -x "$ZX_RUN" ] || { echo "cannot run $ZX_RUN (set ZX_RUN)" >&2; exit 1; }
