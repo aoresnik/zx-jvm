@@ -6,6 +6,10 @@ It is basic because of the constraints of the target machine: currently enough t
 
 Of course it was vibecoded.
 
+| [`HelloWorld.java`](examples/HelloWorld.java) | [`Fibonacci.java`](examples/Fibonacci.java) |
+|---|---|
+| ![Hello world from Java on a Spectrum screen](docs/HelloWorld.png) | ![The first 15 Fibonacci numbers on a Spectrum screen](docs/Fibonacci.png) |
+
 ## Requirements
 
 - [z88dk](https://z88dk.org/), with `zcc` and `appmake` on your `PATH`
@@ -183,6 +187,7 @@ You can also run its script directly:
 
 ```
 .claude/skills/  Claude Code skill for running programs in Fuse
+docs/            Screenshots for this README
 examples/        Example Java programs
 src/zxjvm.c      The JVM
 tools/MkTap.java Builds the tape images
