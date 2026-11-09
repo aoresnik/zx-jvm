@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Runs each test program in Fuse and compares its final screen with the
-# reference image in tests/expected.
+# Runs each test program in Fuse, reads the text on its final screen and
+# compares it with tests/expected/<name>.txt.
 #
 # usage: tests/run.sh [--update] [TestName...]
 #
-# --update rewrites the reference images: check them by eye afterwards.
-# Fuse windows open on the display while this runs. References depend on how
-# Fuse draws its window, so regenerate them if Fuse or its display settings change.
+# --update rewrites the expected text: check the diff before committing it.
+# Fuse windows open on the display while this runs.
 set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
 ZX_RUN=${ZX_RUN:-.claude/skills/zx-spectrum-run/scripts/zx-run.sh}
+# The 48K ROM, for its font
+ZX_ROM=${ZX_ROM:-/usr/share/spectrum-roms/48.rom}
 BUILD=build/tests
-# Must cover the menu and status bars; the status bar's speed readout varies.
-BARS=0x30
 
 update=0
 if [ "${1:-}" = "--update" ]; then
@@ -28,6 +27,7 @@ else
 fi
 
 [ -x "$ZX_RUN" ] || { echo "cannot run $ZX_RUN (set ZX_RUN)" >&2; exit 1; }
+[ -r "$ZX_ROM" ] || { echo "cannot read $ZX_ROM (set ZX_ROM)" >&2; exit 1; }
 mkdir -p "$BUILD"
 
 failed=0
@@ -41,27 +41,31 @@ for name in "${names[@]}"; do
         continue
     fi
 
-    raw=$BUILD/$name.raw.png
-    actual=$BUILD/$name.png
-    expected=tests/expected/$name.png
+    screen=$BUILD/$name.png
+    actual=$BUILD/$name.txt
+    expected=tests/expected/$name.txt
     # Every test should finish, so a screen that never settles is a failure.
-    if ! "$ZX_RUN" --out "$raw" "$BUILD/$name.tap" >/dev/null; then
-        echo "FAIL $name: did not settle (screen: $raw)"
+    if ! "$ZX_RUN" --out "$screen" "$BUILD/$name.tap" >/dev/null; then
+        echo "FAIL $name: did not settle (screen: $screen)"
         failed=1
         continue
     fi
-    convert "$raw" -strip -gravity North -chop "$BARS" -gravity South -chop "$BARS" "$actual"
+    if ! java tests/ScreenText.java "$screen" "$ZX_ROM" >"$actual"; then
+        echo "FAIL $name: cannot read the screen (see $screen)"
+        failed=1
+        continue
+    fi
 
     if [ "$update" -eq 1 ]; then
         cp "$actual" "$expected"
         echo "UPDATED $name"
     elif [ ! -f "$expected" ]; then
-        echo "FAIL $name: no reference image"
+        echo "FAIL $name: no expected text"
         failed=1
-    elif compare -metric AE "$expected" "$actual" null: 2>/dev/null; then
+    elif diff -u "$expected" "$actual"; then
         echo "ok   $name"
     else
-        echo "FAIL $name: screen differs (see $actual)"
+        echo "FAIL $name: screen differs (screen: $screen)"
         failed=1
     fi
 done

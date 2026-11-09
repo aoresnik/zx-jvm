@@ -1,0 +1,24 @@
+Hello, Spectrum!
+x = 42
+n = -7
+folded by javac
+two
+lines
+
+non-ASCII: caf? ?5 ?? tab?end
+ROM differs: ↑ £ ?
+null
+A line wider than the 32 columns
+ of the screen wraps around.
+loop 0 loop 1 loop 2
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1

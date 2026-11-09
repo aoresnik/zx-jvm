@@ -1,0 +1,24 @@
+JVM: unsupported method java/io/
+PrintStream.println:(C)V
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1

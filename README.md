@@ -140,7 +140,7 @@ make test               # run all tests
 tests/run.sh Edge       # run one test
 ```
 
-Each test builds a tape, runs it in Fuse, and compares the final screen pixel by pixel with an image in `tests/expected/`. A test also fails if the screen never settles.
+Each test builds a tape, runs it in Fuse and takes a screenshot of the final screen. [`tests/ScreenText.java`](tests/ScreenText.java) reads the text back by matching each character cell against the font in the 48K ROM, and the test compares that with a text file in `tests/expected/`. A failure prints a diff. A test also fails if the screen never settles.
 
 | Test | What it covers |
 |---|---|
@@ -154,11 +154,13 @@ Each test builds a tape, runs it in Fuse, and compares the final screen pixel by
 | `BadMethod` | Error for an unsupported method, `println(char)` |
 | `NoMain` | Error for a class without `main` |
 
-The tests also need an X display, `xdotool` and ImageMagick. Fuse windows open and take focus during the run, and clicking over one can cause a false failure.
+The tests also need an X display, `xdotool`, ImageMagick and the 48K ROM. The ROM is read from `/usr/share/spectrum-roms/48.rom`, as installed by Debian's `spectrum-roms` package; set `ZX_ROM` to use another path. Fuse windows open and take focus during the run, and clicking over one can cause a false failure.
 
 To start Fuse and capture its screen, the tests use the script from the [`zx-spectrum-run` skill](#claude-code-skill). Set `ZX_RUN` to use a script of your own with the same options.
 
-The reference images depend on how Fuse draws its window, so a Fuse upgrade or display change can make tests fail even though the JVM is fine. To regenerate an image, run `tests/run.sh --update Edge` and check the new image by eye.
+Reading the text assumes the default colours, with paper the same colour as the border, and any whole-number window scale. A cell that matches no character appears as `�` in the text.
+
+To change what a test expects, edit its text file, or run `tests/run.sh --update Edge` and check the diff before committing it.
 
 ## Claude Code skill
 
@@ -177,7 +179,7 @@ You can also run its script directly:
 examples/        Example Java programs
 src/zxjvm.c      The JVM
 tools/MkTap.java Builds the tape images
-tests/           Test programs, runner and reference images
+tests/           Test programs, runner, screen reader and expected output
 build/           Generated files
 ```
 

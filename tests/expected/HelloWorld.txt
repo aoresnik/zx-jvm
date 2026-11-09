@@ -1,0 +1,24 @@
+Hello world from Java
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1

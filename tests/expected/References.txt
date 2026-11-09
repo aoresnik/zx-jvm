@@ -1,0 +1,24 @@
+n == null
+n is null
+a != null
+a is not null
+args == null
+a == b
+a is b
+a != c
+a is not c
+out == out
+loop ran 3
+
+
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1
