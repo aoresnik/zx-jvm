@@ -13,6 +13,10 @@ export ZCCCFG ?= $(dir $(shell command -v zcc))../share/z88dk/lib/config/
 TAPE = $(BUILD)/$(CLASS).tap
 JVM_TAPE = $(BUILD)/zx-jvm.tap
 
+# Python environment with SkoolKit, for the tests; kept by make clean
+VENV = .venv
+VENV_STAMP = $(VENV)/installed
+
 all: $(TAPE) $(JVM_TAPE)
 
 $(BUILD)/zxjvm.bin: src/zxjvm.c
@@ -33,10 +37,17 @@ $(JVM_TAPE): $(BUILD)/zxjvm.bin tools/MkTap.java
 run: $(TAPE)
 	fuse --machine 48 --auto-load --tape $(TAPE)
 
-test:
+$(VENV_STAMP): tests/requirements.txt
+	python3 -m venv $(VENV)
+	$(VENV)/bin/pip install -q -r tests/requirements.txt
+	touch $@
+
+venv: $(VENV_STAMP)
+
+test: $(VENV_STAMP)
 	tests/run.sh
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run test clean
+.PHONY: all run venv test clean

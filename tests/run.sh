@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Runs each test program in Fuse, reads the text on its final screen and
-# compares it with tests/expected/<name>.txt.
+# Runs each test program headlessly in SkoolKit's simulator, reads the text on
+# its final screen and compares it with tests/expected/<name>.txt.
 #
 # usage: tests/run.sh [--update] [TestName...]
 #
 # --update rewrites the expected text: check the diff before committing it.
-# Fuse windows open on the display while this runs.
+# Needs the Python environment that `make venv` creates; set PYTHON to use
+# another interpreter with SkoolKit installed.
 set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
-ZX_RUN=${ZX_RUN:-.claude/skills/zx-spectrum-run/scripts/zx-run.sh}
-# The 48K ROM, for its font
-ZX_ROM=${ZX_ROM:-/usr/share/spectrum-roms/48.rom}
+PYTHON=${PYTHON:-.venv/bin/python}
 BUILD=build/tests
 
 update=0
@@ -26,8 +25,7 @@ else
     names=(Fibonacci HelloWorld Edge Scroll Strings LongString References BadOpcode BadMethod NoMain)
 fi
 
-[ -x "$ZX_RUN" ] || { echo "cannot run $ZX_RUN (set ZX_RUN)" >&2; exit 1; }
-[ -r "$ZX_ROM" ] || { echo "cannot read $ZX_ROM (set ZX_ROM)" >&2; exit 1; }
+[ -x "$PYTHON" ] || { echo "cannot run $PYTHON (run make venv, or set PYTHON)" >&2; exit 1; }
 mkdir -p "$BUILD"
 
 failed=0
@@ -44,14 +42,15 @@ for name in "${names[@]}"; do
     screen=$BUILD/$name.png
     actual=$BUILD/$name.txt
     expected=tests/expected/$name.txt
-    # Every test should finish, so a screen that never settles is a failure.
-    if ! "$ZX_RUN" --out "$screen" "$BUILD/$name.tap" >/dev/null; then
-        echo "FAIL $name: did not settle (screen: $screen)"
+    "$PYTHON" tests/tap2text.py --png "$screen" "$BUILD/$name.tap" >"$actual"
+    status=$?
+    # Every test should finish, so running out of time is a failure.
+    if [ "$status" -eq 3 ]; then
+        echo "FAIL $name: did not finish (screen: $screen)"
         failed=1
         continue
-    fi
-    if ! java tests/ScreenText.java "$screen" "$ZX_ROM" >"$actual"; then
-        echo "FAIL $name: cannot read the screen (see $screen)"
+    elif [ "$status" -ne 0 ]; then
+        echo "FAIL $name: could not run the tape"
         failed=1
         continue
     fi

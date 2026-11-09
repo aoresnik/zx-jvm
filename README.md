@@ -12,8 +12,9 @@ Of course it was vibecoded.
 - A JDK, version 11 or newer
 - [Fuse](https://fuse-emulator.sourceforge.net/) to run the tapes on an emulated Spectrum
 - GNU Make
+- Python 3, for the [tests](#tests)
 
-Tested with z88dk 2.0, OpenJDK 17 and Fuse 1.6.0.
+Tested with z88dk 2.0, OpenJDK 17, Fuse 1.6.0, Python 3.11 and SkoolKit 10.2.
 
 ## Quick start
 
@@ -140,7 +141,7 @@ make test               # run all tests
 tests/run.sh Edge       # run one test
 ```
 
-Each test builds a tape, runs it in Fuse and takes a screenshot of the final screen. [`tests/ScreenText.java`](tests/ScreenText.java) reads the text back by matching each character cell against the font in the 48K ROM, and the test compares that with a text file in `tests/expected/`. A failure prints a diff. A test also fails if the screen never settles.
+Each test builds a tape and runs it with [`tests/tap2text.py`](tests/tap2text.py), which needs no display. The script uses [SkoolKit](https://skoolkit.ca)'s Z80 simulator to load the tape on an emulated 48K Spectrum, running the ROM's own loader. It then runs the program until BASIC waits for a key, and reads the text from screen memory using the ROM font. The test compares that text with a file in `tests/expected/`, and a failure prints a diff. A program that runs for more than 60 seconds of emulated time also fails.
 
 | Test | What it covers |
 |---|---|
@@ -154,11 +155,17 @@ Each test builds a tape, runs it in Fuse and takes a screenshot of the final scr
 | `BadMethod` | Error for an unsupported method, `println(char)` |
 | `NoMain` | Error for a class without `main` |
 
-The tests also need an X display, `xdotool`, ImageMagick and the 48K ROM. The ROM is read from `/usr/share/spectrum-roms/48.rom`, as installed by Debian's `spectrum-roms` package; set `ZX_ROM` to use another path. Fuse windows open and take focus during the run, and clicking over one can cause a false failure.
+The tests need Python 3 with the `venv` module. `make test` creates a Python environment in `.venv` with the SkoolKit version from `tests/requirements.txt`; you can also create it with `make venv`. To use another interpreter that has SkoolKit installed, set `PYTHON`.
 
-To start Fuse and capture its screen, the tests use the script from the [`zx-spectrum-run` skill](#claude-code-skill). Set `ZX_RUN` to use a script of your own with the same options.
+A whole test takes a fraction of a second to run. The tests only cover the 48K Spectrum.
 
-Reading the text assumes the default colours, with paper the same colour as the border, and any whole-number window scale. A cell that matches no character appears as `�` in the text.
+A character cell that matches no character appears as `�` in the text. `build/tests/<name>.png` shows the final screen as an image.
+
+You can also run a single tape yourself:
+
+```sh
+.venv/bin/python tests/tap2text.py build/HelloWorld.tap
+```
 
 To change what a test expects, edit its text file, or run `tests/run.sh --update Edge` and check the diff before committing it.
 
@@ -179,7 +186,7 @@ You can also run its script directly:
 examples/        Example Java programs
 src/zxjvm.c      The JVM
 tools/MkTap.java Builds the tape images
-tests/           Test programs, runner, screen reader and expected output
+tests/           Test programs, runner, headless tape runner and expected output
 build/           Generated files
 ```
 
