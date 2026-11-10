@@ -125,10 +125,8 @@ static void rom_init(void)
 static void rom_putc(unsigned char c) __z88dk_fastcall
 {
 #asm
-    ld   a,255
-    ld   (23692),a  ; SCR-CT: never stop at the scroll? prompt, even when wrapping
     ld   a,l
-    rst  16
+    rst  16        ; stops at scroll? after each screen of new output, as BASIC does
 #endasm
 }
 

@@ -87,7 +87,12 @@ Output uses the Spectrum character set, which is close to ASCII:
 - `\n` starts a new line.
 - `^`, `` ` `` and code 127 print as `↑`, `£` and `?`.
 - Other control characters and every non-ASCII character print as one `?` each. Characters outside the Basic Multilingual Plane, such as emoji, print as `??`, because Java stores them as two `char`s.
-- Long lines wrap at 32 columns, and the screen scrolls without the `scroll?` prompt.
+- Long lines wrap at 32 columns.
+
+The Spectrum has no scrollback. Instead, as in BASIC, output stops at `scroll?` after each screen of new text:
+
+- Any key except N, SPACE and BREAK shows the next screen.
+- N, SPACE or BREAK stop the program with `D BREAK - CONT repeats`. `CONT` then runs the program again from the start.
 
 Everything else is unsupported, including multiplication and division, other types, `char` output, string operations, arrays, objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
 
@@ -145,15 +150,15 @@ make test               # run all tests
 tests/run.sh Edge       # run one test
 ```
 
-Each test builds a tape and runs it with [`tests/tap2text.py`](tests/tap2text.py), which needs no display. The script uses [SkoolKit](https://skoolkit.ca)'s Z80 simulator to load the tape on an emulated 48K Spectrum, running the ROM's own loader. It then runs the program until BASIC waits for a key, and reads the text from screen memory using the ROM font. The test compares that text with a file in `tests/expected/`, and a failure prints a diff. A program that runs for more than 60 seconds of emulated time also fails.
+Each test builds a tape and runs it with [`tests/tap2text.py`](tests/tap2text.py), which needs no display. The script uses [SkoolKit](https://skoolkit.ca)'s Z80 simulator to load the tape on an emulated 48K Spectrum, running the ROM's own loader. It then runs the program until BASIC waits for a key, and reads the text from screen memory using the ROM font. At each `scroll?` prompt, it records the screen, adds a `--- key pressed` line and presses ENTER. The test compares the text with a file in `tests/expected/`, and a failure prints a diff. A program that runs for more than 60 seconds of emulated time without reaching a prompt also fails.
 
 | Test | What it covers |
 |---|---|
 | `Fibonacci`, `HelloWorld` | The example programs |
 | `Edge` | Int limits, overflow, negative constants, branches |
-| `Scroll` | 32-bit wraparound, a countdown loop, scrolling past a full screen |
+| `Scroll` | 32-bit wraparound, a countdown loop, paging through three screens |
 | `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
-| `LongString` | Scrolling caused only by wrapped text |
+| `LongString` | The `scroll?` prompt caused only by wrapped text |
 | `References` | `null` checks and comparing references |
 | `BadOpcode` | Error for an unsupported opcode |
 | `BadMethod` | Error for an unsupported method, `println(char)` |
