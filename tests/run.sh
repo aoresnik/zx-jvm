@@ -4,6 +4,8 @@
 #
 # usage: tests/run.sh [--update] [TestName...]
 #
+# A test that reads input types the lines of tests/<name>.in (see tap2text.py).
+#
 # --update rewrites the expected text: check the diff before committing it.
 # Needs the Python environment that `make venv` creates; set PYTHON to use
 # another interpreter with SkoolKit installed.
@@ -22,7 +24,8 @@ fi
 if [ $# -gt 0 ]; then
     names=("$@")
 else
-    names=(Fibonacci HelloWorld Edge Scroll Strings LongString References BadOpcode BadMethod NoMain)
+    names=(Fibonacci HelloWorld Edge Scroll Strings LongString References Input InputInts
+           BadOpcode BadMethod BadInput NoMain)
 fi
 
 [ -x "$PYTHON" ] || { echo "cannot run $PYTHON (run make venv, or set PYTHON)" >&2; exit 1; }
@@ -42,7 +45,9 @@ for name in "${names[@]}"; do
     screen=$BUILD/$name.png
     actual=$BUILD/$name.txt
     expected=tests/expected/$name.txt
-    "$PYTHON" tests/tap2text.py --png "$screen" "$BUILD/$name.tap" >"$actual"
+    input=()
+    [ -f "tests/$name.in" ] && input=(--input "tests/$name.in")
+    "$PYTHON" tests/tap2text.py --png "$screen" "${input[@]}" "$BUILD/$name.tap" >"$actual"
     status=$?
     # Every test should finish, so running out of time is a failure.
     if [ "$status" -eq 3 ]; then

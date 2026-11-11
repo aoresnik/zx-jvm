@@ -5,22 +5,33 @@ final screen, read from screen memory by matching each 8x8 character cell
 against the font in the 48K ROM.
 
 The tape is loaded on a 48K Spectrum until it jumps to the JVM at 32768, then
-run until the ROM waits for a key (WAIT-KEY). If that is the scroll? prompt,
-the screen is printed, followed by a "--- key pressed" line, and ENTER is
-pressed. The run ends when the BASIC editor waits for a key, which is after the
-program has returned and its report, such as 0 OK, is on the screen. Cells
-that match no character, in normal or inverse video, are printed as U+FFFD.
+run until the ROM waits for a key (WAIT-KEY):
 
-usage: tap2text.py [--max-seconds N] [--png FILE] tape.tap
+- At the scroll? prompt, the screen is printed, followed by a
+  "--- key pressed" line, and ENTER is pressed.
+- When the program reads a line in the input line (INPUT mode), the next line
+  of the input file is typed one key at a time. Python escapes in the file
+  give other key codes, such as \\x0c for DELETE or \\xc7 for the <= keyword.
+  Before ENTER, the screen is printed with the typed line on it, followed by
+  "--- typed: " and the line from the file.
+- When the BASIC editor waits for a key, the program has returned and its
+  report, such as 0 OK, is on the screen. That final screen is printed.
 
---max-seconds  emulated time to allow for each screen (default 60)
+Cells that match no character, in normal or inverse video, are printed as
+U+FFFD.
+
+usage: tap2text.py [--max-seconds N] [--png FILE] [--input FILE] tape.tap
+
+--max-seconds  emulated time to allow between key presses (default 60)
 --png          also write an image of the final screen
+--input        lines to type, one per input request; all must be used
 
 Exit status: 0 finished, 3 did not finish in time (the screen is still
 printed), 1 failure, 2 usage. Needs SkoolKit 10 (pip install skoolkit).
 """
 
 import argparse
+import codecs
 import contextlib
 import io
 import os
@@ -38,8 +49,9 @@ EDITOR_RETURN = 0x0F3B  # after the call to WAIT-KEY in the BASIC editor
 KEY_ENTER = 13
 LAST_K = 23560          # the last key pressed
 FLAGS = 23611           # bit 5: a new key has been pressed
-MAX_PAGES = 100
-PAGE_BREAK = '\n--- key pressed\n'
+FLAGX = 23665           # bit 5: INPUT mode
+MAX_STEPS = 10000       # keys pressed, to stop runaway programs
+SHOW_TSTATES = 140000   # two frames, for the editor to show the line before ENTER
 FONT_ADDR = 0x3D00      # characters 32 to 127
 SCREEN_ADDR = 0x4000
 T_STATES_PER_SECOND = 3500000
@@ -91,15 +103,46 @@ def screen_text(memory, font):
     return '\n'.join(lines).rstrip()
 
 
+def read_input(path):
+    if path is None:
+        return []
+    try:
+        with open(path, encoding='utf-8') as f:
+            return f.read().splitlines()
+    except OSError as e:
+        raise Failure(str(e))
+
+
+def line_keys(line):
+    """The key codes that type a line of the input file, then ENTER."""
+    try:
+        keys = [ord(c) for c in codecs.decode(line, 'unicode_escape')]
+    except UnicodeDecodeError as e:
+        raise Failure('bad escape in input line {!r}: {}'.format(line, e))
+    if any(k > 255 for k in keys):
+        raise Failure('not a Spectrum key code in input line {!r}'.format(line))
+    return keys + [KEY_ENTER]
+
+
+def press(key, snapshot):
+    """trace.py options that press a key as the keyboard interrupt would report it."""
+    return ['--poke', '{},{}'.format(LAST_K, key),
+            '--poke', '{},{}'.format(FLAGS, snapshot.memory[FLAGS] | 0x20)]
+
+
 def main():
-    parser = argparse.ArgumentParser(usage='tap2text.py [--max-seconds N] [--png FILE] tape.tap')
+    parser = argparse.ArgumentParser(
+        usage='tap2text.py [--max-seconds N] [--png FILE] [--input FILE] tape.tap')
     parser.add_argument('tape')
     parser.add_argument('--max-seconds', type=int, default=60)
     parser.add_argument('--png')
+    parser.add_argument('--input')
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding='utf-8')
 
+    transcript = []     # earlier screens, each followed by what happened next
     try:
+        lines = read_input(args.input)
         with tempfile.TemporaryDirectory() as tmp:
             snapshot_file = os.path.join(tmp, 'loaded.z80')
             run_tool(tap2sna.main, ['--start', str(JVM_ADDR), args.tape, snapshot_file])
@@ -107,41 +150,64 @@ def main():
                 raise Failure('the tape did not start the JVM at {}'.format(JVM_ADDR))
 
             font = load_font()
-            pages = []
+            keys = []       # what is left to type of the current input line
+            line = None
             resume = []
-            while True:
+            for step in range(MAX_STEPS):
                 previous = snapshot_file
-                snapshot_file = os.path.join(tmp, 'page{}.z80'.format(len(pages)))
+                snapshot_file = os.path.join(tmp, 'step{}.z80'.format(step))
                 outputs = [snapshot_file] + ([args.png] if args.png else [])
                 run_tool(trace.main, resume + [
                     '--stop', str(WAIT_KEY),
                     '--max-tstates', str(args.max_seconds * T_STATES_PER_SECOND),
                     previous] + outputs)
                 snapshot = Snapshot.get(snapshot_file)
-                pages.append(screen_text(snapshot.memory, font))
+                screen = screen_text(snapshot.memory, font)
                 if snapshot.pc != WAIT_KEY:
-                    print(PAGE_BREAK.join(pages))
+                    transcript.append(screen)
+                    print('\n'.join(transcript))
                     print('tap2text.py: did not finish within {} s'.format(args.max_seconds),
                           file=sys.stderr)
                     return 3
-                sp = snapshot.sp
-                caller = snapshot.memory[sp] | snapshot.memory[sp + 1] << 8
-                if caller == EDITOR_RETURN:
+
+                caller = snapshot.memory[snapshot.sp] | snapshot.memory[snapshot.sp + 1] << 8
+                if caller == SCROLL_RETURN:
+                    transcript.append(screen + '\n--- key pressed')
+                    key = KEY_ENTER
+                elif caller == EDITOR_RETURN and snapshot.memory[FLAGX] & 0x20:
+                    if not keys:
+                        if not lines:
+                            transcript.append(screen)
+                            raise Failure('the program wants more input than the input file has')
+                        line = lines.pop(0)
+                        keys = line_keys(line)
+                    key = keys.pop(0)
+                    if not keys:
+                        # Before ENTER, let the editor show the line, and record it
+                        previous = snapshot_file
+                        snapshot_file = os.path.join(tmp, 'step{}-shown.z80'.format(step))
+                        run_tool(trace.main, ['--max-tstates', str(SHOW_TSTATES),
+                                              previous, snapshot_file])
+                        snapshot = Snapshot.get(snapshot_file)
+                        transcript.append(screen_text(snapshot.memory, font)
+                                          + '\n--- typed: ' + line)
+                elif caller == EDITOR_RETURN:
+                    transcript.append(screen)
                     break
-                if caller != SCROLL_RETURN:
-                    print(PAGE_BREAK.join(pages))
+                else:
+                    transcript.append(screen)
                     raise Failure('waiting for a key, called from {}'.format(caller))
-                if len(pages) == MAX_PAGES:
-                    print(PAGE_BREAK.join(pages))
-                    raise Failure('more than {} screens'.format(MAX_PAGES))
-                # Press ENTER as the keyboard interrupt would report it, and let
-                # WAIT-KEY handle it as usual
-                resume = ['--poke', '{},{}'.format(LAST_K, KEY_ENTER),
-                          '--poke', '{},{}'.format(FLAGS, snapshot.memory[FLAGS] | 0x20)]
-            print(PAGE_BREAK.join(pages))
+                resume = press(key, snapshot)
+            else:
+                raise Failure('more than {} keys pressed'.format(MAX_STEPS))
+            if lines:
+                raise Failure('{} input lines were not read'.format(len(lines)))
     except Failure as e:
+        if transcript:
+            print('\n'.join(transcript))
         print('tap2text.py: {}'.format(e), file=sys.stderr)
         return 1
+    print('\n'.join(transcript))
     return 0
 
 

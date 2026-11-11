@@ -3,14 +3,18 @@
  *
  * Runs public static void main(String[]) of a single .class file that has
  * already been loaded into memory at CLASS_ADDR. Bytecode is interpreted
- * directly from the class file image; there is no verifier, no heap and no
- * class loading. Runtime methods are implemented in C, listed in natives[].
+ * directly from the class file image; there is no verifier, no garbage
+ * collector and no class loading. Runtime classes and methods are implemented
+ * in C, listed in classes[], fields[] and natives[].
  *
  * A reference is the 16-bit address of an object, held in a 32-bit slot, and
- * null is 0. A String is its CONSTANT_Utf8 entry in the class file, so the
- * first byte of an object is TAG_UTF8 for a String or an OBJ_* kind otherwise.
+ * null is 0. A String has the layout of a CONSTANT_Utf8 entry: constant
+ * strings are their entries in the class file, and strings made at run time
+ * are allocated on the heap. The first byte of an object is TAG_UTF8 for a
+ * String or an OBJ_* kind otherwise.
  *
- * Memory map: 32768 this program, 49152 the class file.
+ * Memory map: 32768 this program, 49152 the class file, then the heap up to
+ * the user-defined graphics.
  */
 
 #pragma output CRT_ORG_CODE = 32768
@@ -22,6 +26,12 @@
 #include <stdlib.h>
 
 #define CLASS_ADDR ((unsigned char *)49152)
+#define HEAP_END   ((unsigned char *)65368)     /* the user-defined graphics */
+
+/* System variables and ROM data */
+#define WORKSP     ((unsigned int *)23649)
+#define STKBOT     ((unsigned int *)23651)
+#define TKN_TABLE  ((unsigned char *)0x0095)    /* keywords, last letter + 0x80 */
 
 #define MAX_CP     256  /* constant pool entries */
 #define MAX_FRAME  64   /* locals + operand stack, in 32-bit slots */
@@ -33,6 +43,8 @@
 #define TAG_STRING  8
 
 #define OBJ_PRINTSTREAM 0x80
+#define OBJ_INPUTSTREAM 0x81
+#define OBJ_SCANNER     0x82
 
 #define REF(p)   ((jint)(unsigned int)(p))
 #define DEREF(r) ((unsigned char *)(unsigned int)(r))
@@ -68,6 +80,8 @@
 #define OP_ASTORE_1      0x4C
 #define OP_ASTORE_2      0x4D
 #define OP_ASTORE_3      0x4E
+#define OP_POP           0x57
+#define OP_DUP           0x59
 #define OP_IADD          0x60
 #define OP_ISUB          0x64
 #define OP_IINC          0x84
@@ -89,6 +103,8 @@
 #define OP_RETURN        0xB1
 #define OP_GETSTATIC     0xB2
 #define OP_INVOKEVIRTUAL 0xB6
+#define OP_INVOKESPECIAL 0xB7
+#define OP_NEW           0xBB
 #define OP_IFNULL        0xC6
 #define OP_IFNONNULL     0xC7
 
@@ -99,7 +115,14 @@ static unsigned int cp_count;
 static unsigned char resolved[MAX_CP];  /* Methodref -> natives[] index + 1 */
 static jint frame[MAX_FRAME];
 
+static unsigned char *heap_top;
+
 static unsigned char system_out[] = { OBJ_PRINTSTREAM };
+static unsigned char system_in[] = { OBJ_INPUTSTREAM };
+
+/* Input read by Scanner: the current line, or 0 when a new one is needed */
+static unsigned char *scan_line;
+static unsigned int scan_pos;
 
 static unsigned long powers_of_ten[] = {
     1000000000UL, 100000000UL, 10000000UL, 1000000UL, 100000UL,
@@ -127,6 +150,67 @@ static void rom_putc(unsigned char c) __z88dk_fastcall
 #asm
     ld   a,l
     rst  16        ; stops at scroll? after each screen of new output, as BASIC does
+#endasm
+}
+
+/* ---- ROM input, done as the ROM's INPUT LINE does it ---- */
+
+/* Edits a line in the lower screen, leaving it in the workspace, ended by ENTER. */
+static void rom_edit_line(void)
+{
+#asm
+    push ix
+    ld   hl,23665       ; FLAGX
+    set  7,(hl)         ; INPUT LINE: no quotes, no evaluation
+    ld   a,1
+    call $1601          ; CHAN-OPEN, lower screen
+    call $0D6E          ; CLS-LOWER
+    ld   (iy+2),1       ; TV-FLAG: the lower screen is in use
+    call $16BF          ; SET-WORK: empty the workspace
+    ld   hl,23665
+    res  6,(hl)         ; a string
+    set  5,(hl)         ; input mode
+    ld   bc,1
+    rst  $30            ; BC-SPACES: room for the final ENTER
+    ld   (hl),13
+    ld   (23643),hl     ; K-CUR
+    call $0F2C          ; EDITOR, returns on ENTER
+    ld   (iy+$22),0     ; K-CUR into the ROM, hiding the cursor
+    call $21D6          ; IN-CHAN-K
+    jr   nz,edited
+    call $111D          ; ED-COPY
+    ld   bc,(23682)     ; ECHO-E
+    call $0DD9          ; CL-SET
+.edited
+    pop  ix
+#endasm
+}
+
+/* Clears the lower screen and returns to printing in the upper screen. */
+static void rom_end_input(void)
+{
+#asm
+    push ix
+    ld   hl,23665       ; FLAGX
+    res  5,(hl)
+    res  7,(hl)
+    ld   bc,(23688)     ; S-POSN, the upper screen print position
+    ld   a,(23659)      ; DF-SZ, lines in the lower screen
+    cp   b
+    jr   c,posn_ok
+    ld   c,$21          ; the lower screen grew over it: start of its first line
+    ld   b,a
+.posn_ok
+    ld   (23688),bc
+    ld   a,$19
+    sub  b
+    ld   (23692),a      ; SCR-CT: count scrolls from here, as after INPUT
+    res  0,(iy+2)
+    call $0DD9          ; CL-SET
+    call $0D6E          ; CLS-LOWER
+    ld   a,2
+    call $1601          ; CHAN-OPEN, upper screen
+    pop  ix
 #endasm
 }
 
@@ -259,23 +343,14 @@ static int member_is(unsigned int index, char *cls, char *name, char *desc)
 }
 
 /*
- * Prints a String or "null". Only printable ASCII is shown as itself: the ROM
+ * Prints modified UTF-8. Only printable ASCII is shown as itself: the ROM
  * would treat other bytes as control codes, graphics or keywords. Each other
- * character becomes one ?, whatever the length of its modified UTF-8 encoding.
+ * character becomes one ?, whatever the length of its encoding.
  */
-static void print_string(jint ref)
+static void print_chars(unsigned char *s, unsigned int len)
 {
-    unsigned char *s;
-    unsigned int len;
     unsigned char c;
 
-    if (ref == 0L) {
-        print_str("null");
-        return;
-    }
-    s = DEREF(ref);
-    len = u2(s + 1);
-    s += 3;
     while (len-- != 0) {
         c = *s++;
         if (c == '\n')
@@ -285,6 +360,19 @@ static void print_string(jint ref)
         else if ((c & 0xC0) != 0x80)    /* not a continuation byte */
             rom_putc('?');
     }
+}
+
+/* Prints a String or "null". */
+static void print_string(jint ref)
+{
+    unsigned char *s;
+
+    if (ref == 0L) {
+        print_str("null");
+        return;
+    }
+    s = DEREF(ref);
+    print_chars(s + 3, u2(s + 1));
 }
 
 static void print_utf8(unsigned int index)
@@ -318,8 +406,8 @@ static unsigned char *skip_attribute(unsigned char *p)
     return p + 6 + u2(p + 4);
 }
 
-/* Leaves the code of main in code, max_stack and max_locals. */
-static void find_main(unsigned char *p)
+/* Leaves the code of main in code, max_stack and max_locals; returns the end of the class file. */
+static unsigned char *find_main(unsigned char *p)
 {
     unsigned int methods;
     unsigned int attrs;
@@ -344,63 +432,330 @@ static void find_main(unsigned char *p)
                 max_stack = u2(p + 6);
                 max_locals = u2(p + 8);
                 code = p + 14;
-                return;
             }
             p = skip_attribute(p);
         }
     }
-    die("no main method");
+
+    attrs = u2(p);              /* the class's own attributes */
+    p += 2;
+    while (attrs-- != 0)
+        p = skip_attribute(p);
+
+    if (code == 0)
+        die("no main method");
+    return p;
+}
+
+/* ---- Heap and strings ---- */
+
+static unsigned char *alloc(unsigned int size)
+{
+    unsigned char *p;
+
+    if (size > (unsigned int)(HEAP_END - heap_top))
+        die("out of memory");
+    p = heap_top;
+    heap_top += size;
+    return p;
+}
+
+/* Allocates a String of len bytes, to be filled in after the 3-byte header. */
+static unsigned char *new_string(unsigned int len)
+{
+    unsigned char *s;
+
+    s = alloc(3 + len);
+    s[0] = TAG_UTF8;
+    s[1] = len >> 8;
+    s[2] = len;
+    return s;
+}
+
+/* The text of a keyword, ended by its last letter with bit 7 set. */
+static unsigned char *keyword(unsigned char token)
+{
+    unsigned char *p;
+    unsigned char n;
+
+    p = TKN_TABLE;
+    for (n = token - 0xA4; n != 0; n--) {   /* entry 0 is "?", then RND = 0xA5 */
+        while ((*p & 0x80) == 0)
+            p++;
+        p++;
+    }
+    return p;
+}
+
+/*
+ * Copies the edited line to a new String. Keywords become their text, colour
+ * controls are dropped and graphics become ?.
+ */
+static unsigned char *line_to_string(unsigned char *line, unsigned int len)
+{
+    unsigned char *s;
+    unsigned char *k;
+    unsigned char *out;
+    unsigned int size;
+    unsigned int i;
+    unsigned char c;
+    unsigned char pass;
+
+    for (pass = 0; pass < 2; pass++) {      /* measure, then copy */
+        size = 0;
+        out = s + 3;
+        for (i = 0; i < len; i++) {
+            c = line[i];
+            if (c >= 0xA5) {
+                k = keyword(c);
+                do {
+                    if (pass)
+                        *out++ = *k & 0x7F;
+                    size++;
+                } while ((*k++ & 0x80) == 0);
+            } else if (c >= 0x10 && c <= 0x15) {
+                i++;                        /* INK to OVER, and their parameter */
+            } else if (c >= 32) {
+                if (pass)
+                    *out++ = c < 128 ? c : '?';
+                size++;
+            }
+        }
+        if (pass == 0)
+            s = new_string(size);
+    }
+    return s;
+}
+
+/* Reads a line from the input line, and echoes it in the upper screen. */
+static unsigned char *read_line(void)
+{
+    unsigned char *s;
+
+    rom_edit_line();
+    s = line_to_string(DEREF(*WORKSP), *STKBOT - *WORKSP - 1);
+    rom_end_input();
+    print_string(REF(s));
+    print_newline();
+    return s;
 }
 
 /* ---- Runtime methods ---- */
 
+struct native_class {
+    char *name;
+    unsigned char kind;     /* OBJ_* */
+};
+
+static struct native_class classes[] = {
+    { "java/util/Scanner", OBJ_SCANNER }
+};
+
+#define CLASS_COUNT (sizeof(classes) / sizeof(classes[0]))
+
+struct native_field {
+    char *cls;
+    char *name;
+    char *desc;
+    unsigned char *object;
+};
+
+static struct native_field fields[] = {
+    { "java/lang/System", "out", "Ljava/io/PrintStream;", system_out },
+    { "java/lang/System", "in",  "Ljava/io/InputStream;", system_in }
+};
+
+#define FIELD_COUNT (sizeof(fields) / sizeof(fields[0]))
+
 /* args points to the receiver, followed by the arguments */
-typedef void (*native_fn)(jint *args);
+typedef jint (*native_fn)(jint *args);
 
 struct native {
     char *cls;
     char *name;
     char *desc;
     unsigned char slots;    /* operand stack slots taken, including the receiver */
+    unsigned char returns;  /* pushes a result */
     native_fn fn;
 };
 
-static void native_print_int(jint *args)
+static jint native_print_int(jint *args)
 {
     print_int(args[1]);
+    return 0L;
 }
 
-static void native_println_int(jint *args)
+static jint native_println_int(jint *args)
 {
     print_int(args[1]);
     print_newline();
+    return 0L;
 }
 
-static void native_print_string(jint *args)
+static jint native_print_string(jint *args)
 {
     print_string(args[1]);
+    return 0L;
 }
 
-static void native_println_string(jint *args)
+static jint native_println_string(jint *args)
 {
     print_string(args[1]);
     print_newline();
+    return 0L;
 }
 
-static void native_println(jint *args)
+static jint native_println(jint *args)
 {
     print_newline();
+    return 0L;
+}
+
+static jint native_scanner_init(jint *args)
+{
+    if (args[1] != REF(system_in))
+        die("Scanner: only System.in supported");
+    return 0L;
+}
+
+/* Stops as Scanner would throw InputMismatchException. */
+static void die_not_int(unsigned char *s, unsigned int len)
+{
+    print_str("JVM: not an int: ");
+    print_chars(s, len);
+    print_newline();
+    exit(1);
+}
+
+/* Parses a decimal int with an optional sign, as Scanner.nextInt does. */
+static jint parse_int(unsigned char *s, unsigned int len)
+{
+    unsigned long v;
+    unsigned char neg;
+    unsigned char last;     /* the largest last digit when v is 214748364 */
+    unsigned char d;
+    unsigned int i;
+
+    neg = 0;
+    i = 0;
+    if (len > 1 && (s[0] == '-' || s[0] == '+')) {
+        neg = s[0] == '-';
+        i = 1;
+    }
+    last = neg ? 8 : 7;
+    v = 0;
+    for (; i < len; i++) {
+        d = s[i] - '0';
+        /* No division or multiplication by 10, to stay clear of sccz80 bugs */
+        if (d > 9 || v > 214748364UL || (v == 214748364UL && d > last))
+            die_not_int(s, len);
+        v = (v << 3) + (v << 1) + d;
+    }
+    return neg ? (jint)(~v + 1UL) : (jint)v;
+}
+
+static jint native_next_line(jint *args)
+{
+    unsigned char *line;
+    unsigned char *s;
+    unsigned char *out;
+    unsigned int len;
+
+    if (scan_line == 0) {
+        scan_line = read_line();
+        scan_pos = 0;
+    }
+    line = scan_line;
+    scan_line = 0;
+    if (scan_pos == 0)
+        return REF(line);
+    len = u2(line + 1) - scan_pos;          /* what nextInt left of the line */
+    s = new_string(len);
+    out = s + 3;
+    for (line += 3 + scan_pos; len != 0; len--)
+        *out++ = *line++;
+    return REF(s);
+}
+
+static jint native_next_int(jint *args)
+{
+    unsigned char *s;
+    unsigned int len;
+    unsigned int start;
+
+    for (;;) {
+        if (scan_line == 0) {
+            scan_line = read_line();
+            scan_pos = 0;
+        }
+        s = scan_line + 3;
+        len = u2(scan_line + 1);
+        while (scan_pos < len && s[scan_pos] == ' ')
+            scan_pos++;
+        if (scan_pos < len)
+            break;
+        scan_line = 0;      /* only spaces left, and the end of a line is one too */
+    }
+    start = scan_pos;
+    while (scan_pos < len && s[scan_pos] != ' ')
+        scan_pos++;
+    return parse_int(s + start, scan_pos - start);
+}
+
+static jint native_close(jint *args)
+{
+    return 0L;
 }
 
 static struct native natives[] = {
-    { "java/io/PrintStream", "print",   "(I)V",                  2, native_print_int },
-    { "java/io/PrintStream", "println", "(I)V",                  2, native_println_int },
-    { "java/io/PrintStream", "print",   "(Ljava/lang/String;)V", 2, native_print_string },
-    { "java/io/PrintStream", "println", "(Ljava/lang/String;)V", 2, native_println_string },
-    { "java/io/PrintStream", "println", "()V",                   1, native_println }
+    { "java/io/PrintStream", "print",    "(I)V",                     2, 0, native_print_int },
+    { "java/io/PrintStream", "println",  "(I)V",                     2, 0, native_println_int },
+    { "java/io/PrintStream", "print",    "(Ljava/lang/String;)V",    2, 0, native_print_string },
+    { "java/io/PrintStream", "println",  "(Ljava/lang/String;)V",    2, 0, native_println_string },
+    { "java/io/PrintStream", "println",  "()V",                      1, 0, native_println },
+    { "java/util/Scanner",   "<init>",   "(Ljava/io/InputStream;)V", 2, 0, native_scanner_init },
+    { "java/util/Scanner",   "nextLine", "()Ljava/lang/String;",     1, 1, native_next_line },
+    { "java/util/Scanner",   "nextInt",  "()I",                      1, 1, native_next_int },
+    { "java/util/Scanner",   "close",    "()V",                      1, 0, native_close }
 };
 
 #define NATIVE_COUNT (sizeof(natives) / sizeof(natives[0]))
+
+/* Allocates an object of a class in classes[], given its Class pool entry. */
+static unsigned char *new_object(unsigned int index)
+{
+    unsigned int name;
+    unsigned char i;
+    unsigned char *obj;
+
+    name = u2(cp[index] + 1);
+    for (i = 0; i < CLASS_COUNT; i++) {
+        if (utf8_is(name, classes[i].name)) {
+            obj = alloc(1);
+            *obj = classes[i].kind;
+            return obj;
+        }
+    }
+    print_str("JVM: unsupported class ");
+    print_utf8(name);
+    print_newline();
+    exit(1);
+    return 0;
+}
+
+static unsigned char *get_static(unsigned int index)
+{
+    unsigned char i;
+    struct native_field *f;
+
+    for (i = 0; i < FIELD_COUNT; i++) {
+        f = &fields[i];
+        if (member_is(index, f->cls, f->name, f->desc))
+            return f->object;
+    }
+    die_member("field", index);
+    return 0;
+}
 
 /* Looks a Methodref up in natives[] once, then remembers the result. */
 static struct native *resolve_method(unsigned int index)
@@ -547,18 +902,31 @@ static void run(void)
         case OP_RETURN:
             return;
         case OP_GETSTATIC:
-            if (!member_is(u2(pc + 1), "java/lang/System", "out", "Ljava/io/PrintStream;"))
-                die_member("field", u2(pc + 1));
-            *sp++ = REF(system_out);
+            *sp++ = REF(get_static(u2(pc + 1)));
             pc += 3;
             break;
-        case OP_INVOKEVIRTUAL:
+        case OP_INVOKEVIRTUAL: case OP_INVOKESPECIAL:
             m = resolve_method(u2(pc + 1));
             sp = &sp[-(int)m->slots];
             if (*sp == 0L)
                 die("null pointer");
-            m->fn(sp);
+            a = m->fn(sp);
+            if (m->returns)
+                *sp++ = a;
             pc += 3;
+            break;
+        case OP_NEW:
+            *sp++ = REF(new_object(u2(pc + 1)));
+            pc += 3;
+            break;
+        case OP_DUP:
+            *sp = sp[-1];
+            sp++;
+            pc++;
+            break;
+        case OP_POP:
+            --sp;
+            pc++;
             break;
         default:
             print_str("JVM: unsupported opcode ");
@@ -576,7 +944,7 @@ int main(void)
     rom_init();
     if (u2(CLASS_ADDR) != 0xCAFE || u2(CLASS_ADDR + 2) != 0xBABE)
         die("no class file at 49152");
-    find_main(parse_constant_pool(CLASS_ADDR + 8));
+    heap_top = find_main(parse_constant_pool(CLASS_ADDR + 8));
     run();
     return 0;
 }

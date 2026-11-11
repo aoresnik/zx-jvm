@@ -1,0 +1,149 @@
+Name:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Spectrum <= JavaL
+--- typed: Spectrun\x0cm \xc7 Java
+Name: Spectrum <= Java
+Hello, Spectrum <= Java
+Two numbers:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+3 4 and the restL
+--- typed: 3 4 and the rest
+Name: Spectrum <= Java
+Hello, Spectrum <= Java
+Two numbers: 3 4 and the rest
+Sum: 7
+Rest: [ and the rest]
+Number:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+L
+--- typed: 
+Name: Spectrum <= Java
+Hello, Spectrum <= Java
+Two numbers: 3 4 and the rest
+Sum: 7
+Rest: [ and the rest]
+Number:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+41L
+--- typed: 41
+Name: Spectrum <= Java
+Hello, Spectrum <= Java
+Two numbers: 3 4 and the rest
+Sum: 7
+Rest: [ and the rest]
+Number:
+41
+40
+Line: Line:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+first lineL
+--- typed: first line
+Name: Spectrum <= Java
+Hello, Spectrum <= Java
+Two numbers: 3 4 and the rest
+Sum: 7
+Rest: [ and the rest]
+Number:
+41
+40
+Line: Line: first line
+first line
+
+
+
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1
