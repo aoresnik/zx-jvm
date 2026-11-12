@@ -84,6 +84,10 @@
 #define OP_DUP           0x59
 #define OP_IADD          0x60
 #define OP_ISUB          0x64
+#define OP_IMUL          0x68
+#define OP_IDIV          0x6C
+#define OP_IREM          0x70
+#define OP_INEG          0x74
 #define OP_IINC          0x84
 #define OP_IFEQ          0x99
 #define OP_IFNE          0x9A
@@ -104,6 +108,7 @@
 #define OP_GETSTATIC     0xB2
 #define OP_INVOKEVIRTUAL 0xB6
 #define OP_INVOKESPECIAL 0xB7
+#define OP_INVOKESTATIC  0xB8
 #define OP_NEW           0xBB
 #define OP_IFNULL        0xC6
 #define OP_IFNONNULL     0xC7
@@ -567,14 +572,14 @@ static struct native_field fields[] = {
 
 #define FIELD_COUNT (sizeof(fields) / sizeof(fields[0]))
 
-/* args points to the receiver, followed by the arguments */
+/* args points to the receiver, followed by the arguments; a static method has no receiver */
 typedef jint (*native_fn)(jint *args);
 
 struct native {
     char *cls;
     char *name;
     char *desc;
-    unsigned char slots;    /* operand stack slots taken, including the receiver */
+    unsigned char slots;    /* operand stack slots taken, including any receiver */
     unsigned char returns;  /* pushes a result */
     native_fn fn;
 };
@@ -707,6 +712,33 @@ static jint native_close(jint *args)
     return 0L;
 }
 
+static jint native_parse_int(jint *args)
+{
+    unsigned char *s;
+
+    if (args[0] == 0L)
+        die("not an int: null");
+    s = DEREF(args[0]);
+    if (u2(s + 1) == 0)
+        die_not_int(s + 3, 0);
+    return parse_int(s + 3, u2(s + 1));
+}
+
+static jint native_abs(jint *args)
+{
+    return args[0] < 0L ? ~args[0] + 1L : args[0];  /* Integer.MIN_VALUE stays negative */
+}
+
+static jint native_max(jint *args)
+{
+    return args[0] > args[1] ? args[0] : args[1];
+}
+
+static jint native_min(jint *args)
+{
+    return args[0] < args[1] ? args[0] : args[1];
+}
+
 static struct native natives[] = {
     { "java/io/PrintStream", "print",    "(I)V",                     2, 0, native_print_int },
     { "java/io/PrintStream", "println",  "(I)V",                     2, 0, native_println_int },
@@ -716,7 +748,11 @@ static struct native natives[] = {
     { "java/util/Scanner",   "<init>",   "(Ljava/io/InputStream;)V", 2, 0, native_scanner_init },
     { "java/util/Scanner",   "nextLine", "()Ljava/lang/String;",     1, 1, native_next_line },
     { "java/util/Scanner",   "nextInt",  "()I",                      1, 1, native_next_int },
-    { "java/util/Scanner",   "close",    "()V",                      1, 0, native_close }
+    { "java/util/Scanner",   "close",    "()V",                      1, 0, native_close },
+    { "java/lang/Integer",   "parseInt", "(Ljava/lang/String;)I",    1, 1, native_parse_int },
+    { "java/lang/Math",      "abs",      "(I)I",                     1, 1, native_abs },
+    { "java/lang/Math",      "max",      "(II)I",                    2, 1, native_max },
+    { "java/lang/Math",      "min",      "(II)I",                    2, 1, native_min }
 };
 
 #define NATIVE_COUNT (sizeof(natives) / sizeof(natives[0]))
@@ -777,6 +813,29 @@ static struct native *resolve_method(unsigned int index)
 }
 
 /* ---- Interpreter ---- */
+
+/*
+ * Divides as Java does, truncating towards zero, with the remainder taking
+ * the sign of a. Works on magnitudes, because C leaves Integer.MIN_VALUE / -1
+ * undefined; in Java it wraps around to Integer.MIN_VALUE, with remainder 0.
+ */
+static jint divide(jint a, jint b, unsigned char remainder)
+{
+    unsigned long ua;
+    unsigned long ub;
+    unsigned long r;
+
+    if (b == 0L)
+        die("/ by zero");
+    ua = a < 0L ? ~(unsigned long)a + 1UL : (unsigned long)a;
+    ub = b < 0L ? ~(unsigned long)b + 1UL : (unsigned long)b;
+    if (remainder) {
+        r = ua % ub;
+        return a < 0L ? (jint)(~r + 1UL) : (jint)r;
+    }
+    r = ua / ub;
+    return (a < 0L) != (b < 0L) ? (jint)(~r + 1UL) : (jint)r;
+}
 
 static int branch_taken(unsigned char op, jint a, jint b)
 {
@@ -873,6 +932,20 @@ static void run(void)
             sp[-1] = sp[-1] - b;
             pc++;
             break;
+        case OP_IMUL:
+            b = *--sp;
+            sp[-1] = sp[-1] * b;    /* the low 32 bits, so signedness does not matter */
+            pc++;
+            break;
+        case OP_IDIV: case OP_IREM:
+            b = *--sp;
+            sp[-1] = divide(sp[-1], b, op == OP_IREM);
+            pc++;
+            break;
+        case OP_INEG:
+            sp[-1] = ~sp[-1] + 1L;
+            pc++;
+            break;
         case OP_IINC:
             frame[pc[1]] = frame[pc[1]] + (jint)s1(pc[2]);
             pc += 3;
@@ -910,6 +983,14 @@ static void run(void)
             sp = &sp[-(int)m->slots];
             if (*sp == 0L)
                 die("null pointer");
+            a = m->fn(sp);
+            if (m->returns)
+                *sp++ = a;
+            pc += 3;
+            break;
+        case OP_INVOKESTATIC:
+            m = resolve_method(u2(pc + 1));
+            sp = &sp[-(int)m->slots];
             a = m->fn(sp);
             if (m->returns)
                 *sp++ = a;

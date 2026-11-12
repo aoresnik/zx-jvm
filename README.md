@@ -81,11 +81,11 @@ The JVM runs `public static void main(String[])` from one class.
 |---|---|
 | Constants | `iconst_m1` to `iconst_5`, `bipush`, `sipush`, `ldc` (int and String), `aconst_null` |
 | Local variables | `iload`, `istore`, `aload`, `astore` and their `_0` to `_3` forms, `iinc` |
-| Arithmetic | `iadd`, `isub`, with 32-bit wraparound |
+| Arithmetic | `iadd`, `isub`, `imul`, `idiv`, `irem`, `ineg`, with 32-bit wraparound as in Java |
 | Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `ifnull`, `ifnonnull`, `if_acmpeq`, `if_acmpne`, `goto` |
 | Return | `return` |
-| Objects and calls | `new`, `dup`, `pop`, `invokevirtual`, `invokespecial`, `getstatic`, only for the runtime classes below |
-| Runtime | `System.out.print` and `println` of `int` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()` |
+| Objects and calls | `new`, `dup`, `pop`, `invokevirtual`, `invokespecial`, `invokestatic`, `getstatic`, only for the runtime classes below |
+| Runtime | `System.out.print` and `println` of `int` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()`; `Integer.parseInt(String)`; `Math.abs`, `Math.max` and `Math.min` of `int` |
 
 Strings are constants or lines read with `Scanner`. They can be stored in local variables and compared with `==` and `!=`. As in Java, equal string literals in a class are the same object. Constant expressions such as `"a" + "b"` work because `javac` joins them, but `"x = " + x` needs `invokedynamic` and is unsupported; print the parts separately instead.
 
@@ -123,12 +123,14 @@ String name = in.nextLine();
 - A following `nextLine()` returns that rest, often an empty string, without waiting for input.
 - If the input isn't a number in the range of `int`, the program stops with an error, because exceptions are unsupported. Java would throw `InputMismatchException`.
 
-Everything else is unsupported, including multiplication and division, other types, `char` output, string operations, arrays, your own objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
+Division by zero stops the program with `JVM: / by zero`, where Java would throw `ArithmeticException`. `Integer.parseInt` accepts what `nextInt()` accepts, without spaces.
+
+Everything else is unsupported, including other types, `char` output, string operations, arrays, your own objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
 
 Unsupported features stop the program with an error rather than misbehaving:
 
 ```
-JVM: unsupported opcode 104 at pc 15
+JVM: unsupported opcode 133 at pc 11
 JVM: unsupported method java/io/PrintStream.println:(C)V
 JVM: not an int: 12x
 ```
@@ -154,7 +156,7 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 
 | Address | Contents |
 |---|---|
-| 32768 | JVM, about 10.5 KB |
+| 32768 | JVM, about 11.5 KB |
 | 49152 | Class file |
 | After the class file, up to 65367 | Heap |
 | 65368 | User-defined graphics, as usual |
@@ -202,6 +204,7 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 |---|---|
 | `Fibonacci`, `HelloWorld`, `Adder` | The example programs |
 | `Edge` | Int limits, overflow, negative constants, branches |
+| `Arithmetic` | Multiplication, division and remainder with every sign and overflow, divisors over 16 bits, `ineg`, the static runtime methods, `parseInt("")` |
 | `Scroll` | 32-bit wraparound, a countdown loop, paging through three screens |
 | `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
 | `LongString` | The `scroll?` prompt caused only by wrapped text |
@@ -211,6 +214,7 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 | `BadOpcode` | Error for an unsupported opcode |
 | `BadMethod` | Error for an unsupported method, `println(char)` |
 | `BadInput` | Error for a number out of the range of `int` |
+| `DivideByZero` | Error for division by zero |
 | `NoMain` | Error for a class without `main` |
 
 The tests need Python 3 with the `venv` module. `make test` creates a Python environment in `.venv` with the SkoolKit version from `tests/requirements.txt`; you can also create it with `make venv`. To use another interpreter that has SkoolKit installed, set `PYTHON`.

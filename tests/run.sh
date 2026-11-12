@@ -24,8 +24,8 @@ fi
 if [ $# -gt 0 ]; then
     names=("$@")
 else
-    names=(Fibonacci HelloWorld Adder Edge Scroll Strings LongString References Input InputInts
-           BadOpcode BadMethod BadInput NoMain)
+    names=(Fibonacci HelloWorld Adder Edge Arithmetic Scroll Strings LongString References Input
+           InputInts BadOpcode BadMethod BadInput DivideByZero NoMain)
 fi
 
 [ -x "$PYTHON" ] || { echo "cannot run $PYTHON (run make venv, or set PYTHON)" >&2; exit 1; }
