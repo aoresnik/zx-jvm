@@ -2,7 +2,7 @@
 
 A very small JVM for the ZX Spectrum. It reads a real `.class` file produced by `javac`, loaded from tape as a CODE block, and interprets its bytecode on the Z80.
 
-It is basic because of the constraints of the target machine: currently enough to run programs like [`examples/Fibonacci.java`](examples/Fibonacci.java), which prints the first 15 Fibonacci numbers, to print strings, and to read lines and numbers with `Scanner` on the input line at the bottom of the screen.
+It is basic because of the constraints of the target machine: currently enough to run programs like [`examples/Fibonacci.java`](examples/Fibonacci.java), which prints the first 15 Fibonacci numbers, to print strings, to read lines and numbers with `Scanner` on the input line at the bottom of the screen, and to calculate with `double`, as [`examples/Loan.java`](examples/Loan.java) does for a loan's monthly payments.
 
 Of course it was vibecoded.
 
@@ -16,9 +16,9 @@ Of course it was vibecoded.
 - A JDK, version 11 or newer
 - [Fuse](https://fuse-emulator.sourceforge.net/) to run the tapes on an emulated Spectrum
 - GNU Make
-- Python 3, for the [tests](#tests)
+- Python 3 and a C compiler for the host, such as GCC, for the [tests](#tests)
 
-Tested with z88dk 2.0, OpenJDK 17, Fuse 1.6.0, Python 3.11 and SkoolKit 10.2.
+Tested with z88dk 2.0, OpenJDK 17, Fuse 1.6.0, Python 3.11, SkoolKit 10.2 and GCC 12.
 
 ## Quick start
 
@@ -39,6 +39,12 @@ make run CLASS=HelloWorld
 
 ```sh
 make run CLASS=Adder
+```
+
+[`examples/Loan.java`](examples/Loan.java) calculates the monthly payment of a fixed-rate loan from its amount, yearly interest rate and length in years, and lists the balance left after each year:
+
+```sh
+make run CLASS=Loan
 ```
 
 ## Running your own class
@@ -79,13 +85,14 @@ The JVM runs `public static void main(String[])` from one class.
 
 | Area | Supported |
 |---|---|
-| Constants | `iconst_m1` to `iconst_5`, `bipush`, `sipush`, `ldc` (int and String), `aconst_null` |
-| Local variables | `iload`, `istore`, `aload`, `astore` and their `_0` to `_3` forms, `iinc` |
-| Arithmetic | `iadd`, `isub`, `imul`, `idiv`, `irem`, `ineg`, with 32-bit wraparound as in Java |
+| Constants | `iconst_m1` to `iconst_5`, `bipush`, `sipush`, `ldc` (int and String), `aconst_null`, `dconst_0`, `dconst_1`, `ldc2_w` (double) |
+| Local variables | `iload`, `istore`, `aload`, `astore`, `dload`, `dstore` and their `_0` to `_3` forms, `iinc` |
+| Arithmetic | `iadd`, `isub`, `imul`, `idiv`, `irem`, `ineg`, with 32-bit wraparound as in Java; `dadd`, `dsub`, `dmul`, `ddiv`, `dneg` |
+| Conversions and comparisons | `i2d`, `d2i`, `dcmpl`, `dcmpg` |
 | Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `ifnull`, `ifnonnull`, `if_acmpeq`, `if_acmpne`, `goto` |
 | Return | `return` |
-| Objects and calls | `new`, `dup`, `pop`, `invokevirtual`, `invokespecial`, `invokestatic`, `getstatic`, only for the runtime classes below |
-| Runtime | `System.out.print` and `println` of `int` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()`; `Integer.parseInt(String)`; `Math.abs`, `Math.max` and `Math.min` of `int` |
+| Objects and calls | `new`, `dup`, `dup2`, `pop`, `pop2`, `invokevirtual`, `invokespecial`, `invokestatic`, `getstatic`, only for the runtime classes below |
+| Runtime | `System.out.print` and `println` of `int` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()`; `Integer.parseInt(String)`; `Double.parseDouble(String)`; `Math.abs`, `Math.max` and `Math.min` of `int` |
 
 Strings are constants or lines read with `Scanner`. They can be stored in local variables and compared with `==` and `!=`. As in Java, equal string literals in a class are the same object. Constant expressions such as `"a" + "b"` work because `javac` joins them, but `"x = " + x` needs `invokedynamic` and is unsupported; print the parts separately instead.
 
@@ -125,7 +132,26 @@ String name = in.nextLine();
 
 Division by zero stops the program with `JVM: / by zero`, where Java would throw `ArithmeticException`. `Integer.parseInt` accepts what `nextInt()` accepts, without spaces.
 
-Everything else is unsupported, including other types, `char` output, string operations, arrays, your own objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
+### Doubles
+
+`double` follows IEEE 754 exactly, as Java requires. Every result is rounded the same way as on any other JVM, including infinities, NaN, `-0.0` and the smallest (subnormal) numbers. The arithmetic is done in software, so it is slow: on a real Spectrum, an addition takes about 5 ms, a multiplication about 11 ms and a division about 17 ms. `Loan` works a year at a time rather than a month at a time to stay quick.
+
+Printing a `double` is unsupported, because matching Java's digits exactly would take too much code. Instead, convert it to whole units, as `Loan` does for cents:
+
+```java
+int cents = (int) (amount * 100 + 0.5);
+System.out.print(cents / 100);
+System.out.print(cents % 100 < 10 ? ".0" : ".");
+System.out.println(cents % 100);
+```
+
+To read a `double`, use `Double.parseDouble(in.nextLine())`. `Scanner.nextDouble()` is unsupported. On a desktop, it follows the locale, so in many countries it would expect `4,5` instead of `4.5`; `Double.parseDouble` reads `4.5` everywhere.
+
+`Double.parseDouble` accepts what Java accepts, except for hexadecimal, and rounds correctly. To keep the code small, it supports at most 15 significant digits and powers of ten from -22 to 22, which covers ordinary input. Other numbers stop the program with `JVM: unsupported double`, and text that isn't a number stops it with `JVM: not a double`, where Java would throw `NumberFormatException`.
+
+### Unsupported features
+
+Everything else is unsupported, including other types such as `long` and `float`, printing a `double`, `char` output, string operations, arrays, your own objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
 
 Unsupported features stop the program with an error rather than misbehaving:
 
@@ -133,6 +159,7 @@ Unsupported features stop the program with an error rather than misbehaving:
 JVM: unsupported opcode 133 at pc 11
 JVM: unsupported method java/io/PrintStream.println:(C)V
 JVM: not an int: 12x
+JVM: not a double: 1,5
 ```
 
 The Spectrum still shows `0 OK` after an error, because the JVM always returns to BASIC normally.
@@ -148,20 +175,25 @@ Limits:
 The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 
 ```basic
-10 CLEAR 32767
+10 CLEAR 25599
 20 LOAD ""CODE
 30 LOAD ""CODE 49152
-40 RANDOMIZE USR 32768
+40 RANDOMIZE USR 25600
 ```
 
 | Address | Contents |
 |---|---|
-| 32768 | JVM, about 11.5 KB |
+| Up to 25599 | BASIC: the loader, the input line and the machine stack, with about 1.8 KB to spare |
+| 25600 | JVM, about 20 KB; the build fails if it would reach the class |
 | 49152 | Class file |
 | After the class file, up to 65367 | Heap |
 | 65368 | User-defined graphics, as usual |
 
-The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`, and a reference in the same slot holds a 16-bit address, with `null` as 0.
+The JVM's address is `JVM_ADDR` in the Makefile.
+
+The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`, and a reference in the same slot holds a 16-bit address, with `null` as 0. A `double` takes two slots, as in Java.
+
+The `double` arithmetic is in [`src/double.c`](src/double.c), modelled on [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html). It works on 64-bit significands kept as two 32-bit words, because sccz80 has no 64-bit integer type. Its innermost parts, such as the multiplication loop, are in Z80 code, which made them up to five times faster. The C versions of those parts remain for testing on the host.
 
 Every string has the layout of a `CONSTANT_Utf8` entry. A constant string is its entry in the class file, so it needs no copying, and a line read with `Scanner` is allocated on the heap. `System.out`, `System.in` and `Scanner` objects are one byte that identifies their class.
 
@@ -179,13 +211,15 @@ Output goes through the Spectrum ROM's print routine. Input calls the ROM's line
 
 ### Compiler pitfalls
 
-The JVM is compiled with sccz80, which miscompiled some valid C in this project. These are worth remembering when changing `src/zxjvm.c`, especially 32-bit code:
+The JVM is compiled with sccz80, which miscompiled some valid C in this project. These are worth remembering when changing the C code, especially 32-bit code:
 
 | C code | What went wrong | Used instead |
 |---|---|---|
 | `0UL - v` | Computes `v - 0` | `~v + 1UL` |
 | `v % 10UL` | Divides only the low 16 bits of `v` | Subtracting powers of ten |
 | `(signed char)` cast of a byte | Loses the sign | The `s1()` helper |
+| `s.a[i]`, for an array `a` in a local struct `s` | Ignores the offset of `a` in the struct | A pointer: `p = &s;` then `p->a[i]` |
+| `e <= 0`, for an `int` `e` | Tests the sign with a carry flag left over from the previous instruction | `e < 1` |
 
 ## Tests
 
@@ -202,9 +236,10 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 
 | Test | What it covers |
 |---|---|
-| `Fibonacci`, `HelloWorld`, `Adder` | The example programs |
+| `Fibonacci`, `HelloWorld`, `Adder`, `Loan` | The example programs |
 | `Edge` | Int limits, overflow, negative constants, branches |
 | `Arithmetic` | Multiplication, division and remainder with every sign and overflow, divisors over 16 bits, `ineg`, the static runtime methods, `parseInt("")` |
+| `Doubles` | Each `double` operation, compared with the same expression on constants, which `javac` evaluates itself; infinities, NaN, `-0.0`, subnormals, conversions, `parseDouble` |
 | `Scroll` | 32-bit wraparound, a countdown loop, paging through three screens |
 | `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
 | `LongString` | The `scroll?` prompt caused only by wrapped text |
@@ -214,8 +249,14 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 | `BadOpcode` | Error for an unsupported opcode |
 | `BadMethod` | Error for an unsupported method, `println(char)` |
 | `BadInput` | Error for a number out of the range of `int` |
+| `BadDouble` | Error for a number with a decimal comma |
 | `DivideByZero` | Error for division by zero |
 | `NoMain` | Error for a class without `main` |
+
+Before those, `make test` runs two tests of the `double` arithmetic on its own, which `make test-double` also runs:
+
+- [`tests/double/host_test.c`](tests/double/host_test.c) compiles `src/double.c` for the host and compares it with the host's IEEE 754 hardware on special values and a million random operand pairs. The random numbers are chosen so that rounding ties, cancellation, subnormals and overflow all occur.
+- [`tests/double/z80_test.py`](tests/double/z80_test.py) runs the same code compiled by sccz80, including the Z80 parts, in SkoolKit's simulator, and compares thousands of results with Python's floats. This catches miscompilations, which the host can't.
 
 The tests need Python 3 with the `venv` module. `make test` creates a Python environment in `.venv` with the SkoolKit version from `tests/requirements.txt`; you can also create it with `make venv`. To use another interpreter that has SkoolKit installed, set `PYTHON`.
 
@@ -248,8 +289,10 @@ You can also run its script directly:
 docs/            Screenshots for this README
 examples/        Example Java programs
 src/zxjvm.c      The JVM
+src/double.c     IEEE 754 double arithmetic
 tools/MkTap.java Builds the tape images
 tests/           Test programs, runner, headless tape runner and expected output
+tests/double/    Tests of the double arithmetic on the host and on the Z80
 build/           Generated files
 ```
 

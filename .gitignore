@@ -9,3 +9,6 @@ zcc_opt.def
 
 # From running javac by hand
 *.class
+
+# From importing the test scripts in Python
+__pycache__/

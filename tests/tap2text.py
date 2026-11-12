@@ -4,7 +4,7 @@ Runs a tape headlessly in SkoolKit's Z80 simulator and prints the text on the
 final screen, read from screen memory by matching each 8x8 character cell
 against the font in the 48K ROM.
 
-The tape is loaded on a 48K Spectrum until it jumps to the JVM at 32768, then
+The tape is loaded on a 48K Spectrum until it jumps to the JVM at 25600, then
 run until the ROM waits for a key (WAIT-KEY):
 
 - At the scroll? prompt, the screen is printed, followed by a
@@ -42,7 +42,7 @@ import skoolkit
 from skoolkit import tap2sna, trace
 from skoolkit.snapshot import Snapshot
 
-JVM_ADDR = 32768
+JVM_ADDR = 25600       # JVM_ADDR in the Makefile
 WAIT_KEY = 0x15D4
 SCROLL_RETURN = 0x0CB6  # after the call to WAIT-KEY in the scroll? prompt
 EDITOR_RETURN = 0x0F3B  # after the call to WAIT-KEY in the BASIC editor

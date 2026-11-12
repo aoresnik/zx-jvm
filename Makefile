@@ -5,7 +5,7 @@ CLASS    ?= Fibonacci
 JAVA_DIR ?= examples
 BUILD    ?= build
 
-JVM_ADDR   = 32768
+JVM_ADDR   = 25600
 CLASS_ADDR = 49152
 
 export ZCCCFG ?= $(dir $(shell command -v zcc))../share/z88dk/lib/config/
@@ -19,10 +19,12 @@ VENV_STAMP = $(VENV)/installed
 
 all: $(TAPE) $(JVM_TAPE)
 
-$(BUILD)/zxjvm.bin: src/zxjvm.c
+$(BUILD)/zxjvm.bin: src/zxjvm.c src/double.c src/double.h
 	mkdir -p $(BUILD)
-	zcc +zx -subtype=none -o $@ $<
+	zcc +zx -subtype=none -pragma-define:CRT_ORG_CODE=$(JVM_ADDR) -o $@ src/zxjvm.c src/double.c
 	rm -f zcc_opt.def
+	@size=$$(wc -c < $@); if [ $$size -gt $$(($(CLASS_ADDR) - $(JVM_ADDR))) ]; then \
+	    echo "$@ is $$size bytes and would overlap the class at $(CLASS_ADDR)" >&2; rm -f $@; exit 1; fi
 
 $(BUILD)/$(CLASS).class: $(JAVA_DIR)/$(CLASS).java
 	mkdir -p $(BUILD)
@@ -44,10 +46,28 @@ $(VENV_STAMP): tests/requirements.txt
 
 venv: $(VENV_STAMP)
 
-test: $(VENV_STAMP)
+# The double arithmetic, checked against the host's hardware and, compiled
+# by sccz80, on the emulated Z80 against Python's floats
+DOUBLE_DRIVER = $(BUILD)/tests/double_driver.bin
+DOUBLE_HOST_TEST = $(BUILD)/tests/double_host_test
+
+$(DOUBLE_DRIVER): tests/double/z80_driver.c src/double.c src/double.h
+	mkdir -p $(dir $@)
+	zcc +zx -subtype=none -o $@ tests/double/z80_driver.c src/double.c
+	rm -f zcc_opt.def
+
+$(DOUBLE_HOST_TEST): tests/double/host_test.c src/double.c src/double.h
+	mkdir -p $(dir $@)
+	$(CC) -std=c99 -O2 -Wall -Wextra -ffp-contract=off -o $@ tests/double/host_test.c src/double.c -lm
+
+test-double: $(VENV_STAMP) $(DOUBLE_DRIVER) $(DOUBLE_HOST_TEST)
+	$(DOUBLE_HOST_TEST)
+	$(VENV)/bin/python tests/double/z80_test.py $(DOUBLE_DRIVER)
+
+test: $(VENV_STAMP) test-double
 	tests/run.sh
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run venv test clean
+.PHONY: all run venv test test-double clean

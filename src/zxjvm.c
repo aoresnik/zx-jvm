@@ -8,22 +8,25 @@
  * in C, listed in classes[], fields[] and natives[].
  *
  * A reference is the 16-bit address of an object, held in a 32-bit slot, and
- * null is 0. A String has the layout of a CONSTANT_Utf8 entry: constant
- * strings are their entries in the class file, and strings made at run time
- * are allocated on the heap. The first byte of an object is TAG_UTF8 for a
- * String or an OBJ_* kind otherwise.
+ * null is 0. A double takes two slots, the high word first, and its
+ * arithmetic is in double.c. A String has the layout of a CONSTANT_Utf8
+ * entry: constant strings are their entries in the class file, and strings
+ * made at run time are allocated on the heap. The first byte of an object is
+ * TAG_UTF8 for a String or an OBJ_* kind otherwise.
  *
- * Memory map: 32768 this program, 49152 the class file, then the heap up to
- * the user-defined graphics.
+ * Memory map: this program at JVM_ADDR in the Makefile, 49152 the class
+ * file, then the heap up to the user-defined graphics.
  */
 
-#pragma output CRT_ORG_CODE = 32768
+/* CRT_ORG_CODE, the address of this program, is set by the Makefile */
 #pragma output CRT_ENABLE_STDIO = 0
 #pragma output CLIB_EXIT_STACK_SIZE = 0
 #pragma output CLIB_MALLOC_HEAP_SIZE = 0
 #pragma output CLIB_STDIO_HEAP_SIZE = 0
 
 #include <stdlib.h>
+
+#include "double.h"
 
 #define CLASS_ADDR ((unsigned char *)49152)
 #define HEAP_END   ((unsigned char *)65368)     /* the user-defined graphics */
@@ -40,6 +43,7 @@
 
 #define TAG_UTF8    1
 #define TAG_INTEGER 3
+#define TAG_DOUBLE  6
 #define TAG_STRING  8
 
 #define OBJ_PRINTSTREAM 0x80
@@ -48,6 +52,7 @@
 
 #define REF(p)   ((jint)(unsigned int)(p))
 #define DEREF(r) ((unsigned char *)(unsigned int)(r))
+#define D(slot)  ((uint32_t *)(slot))  /* the double in two slots */
 
 #define OP_ACONST_NULL   0x01
 #define OP_ICONST_M1     0x02
@@ -57,38 +62,62 @@
 #define OP_ICONST_3      0x06
 #define OP_ICONST_4      0x07
 #define OP_ICONST_5      0x08
+#define OP_DCONST_0      0x0E
+#define OP_DCONST_1      0x0F
 #define OP_BIPUSH        0x10
 #define OP_SIPUSH        0x11
 #define OP_LDC           0x12
+#define OP_LDC2_W        0x14
 #define OP_ILOAD         0x15
+#define OP_DLOAD         0x18
 #define OP_ALOAD         0x19
 #define OP_ILOAD_0       0x1A
 #define OP_ILOAD_1       0x1B
 #define OP_ILOAD_2       0x1C
 #define OP_ILOAD_3       0x1D
+#define OP_DLOAD_0       0x26
+#define OP_DLOAD_1       0x27
+#define OP_DLOAD_2       0x28
+#define OP_DLOAD_3       0x29
 #define OP_ALOAD_0       0x2A
 #define OP_ALOAD_1       0x2B
 #define OP_ALOAD_2       0x2C
 #define OP_ALOAD_3       0x2D
 #define OP_ISTORE        0x36
+#define OP_DSTORE        0x39
 #define OP_ASTORE        0x3A
 #define OP_ISTORE_0      0x3B
 #define OP_ISTORE_1      0x3C
 #define OP_ISTORE_2      0x3D
 #define OP_ISTORE_3      0x3E
+#define OP_DSTORE_0      0x47
+#define OP_DSTORE_1      0x48
+#define OP_DSTORE_2      0x49
+#define OP_DSTORE_3      0x4A
 #define OP_ASTORE_0      0x4B
 #define OP_ASTORE_1      0x4C
 #define OP_ASTORE_2      0x4D
 #define OP_ASTORE_3      0x4E
 #define OP_POP           0x57
+#define OP_POP2          0x58
 #define OP_DUP           0x59
+#define OP_DUP2          0x5C
 #define OP_IADD          0x60
+#define OP_DADD          0x63
 #define OP_ISUB          0x64
+#define OP_DSUB          0x67
 #define OP_IMUL          0x68
+#define OP_DMUL          0x6B
 #define OP_IDIV          0x6C
+#define OP_DDIV          0x6F
 #define OP_IREM          0x70
 #define OP_INEG          0x74
+#define OP_DNEG          0x77
 #define OP_IINC          0x84
+#define OP_I2D           0x87
+#define OP_D2I           0x8E
+#define OP_DCMPL         0x97
+#define OP_DCMPG         0x98
 #define OP_IFEQ          0x99
 #define OP_IFNE          0x9A
 #define OP_IFLT          0x9B
@@ -274,6 +303,11 @@ static void die(char *msg)
 static unsigned int u2(unsigned char *p)
 {
     return ((unsigned int)p[0] << 8) | p[1];
+}
+
+static jint u4(unsigned char *p)
+{
+    return ((unsigned long)u2(p) << 16) | (unsigned long)u2(p + 2);
 }
 
 /* Sign-extends a bytecode operand; sccz80 loses the sign of a (signed char) cast here. */
@@ -580,7 +614,7 @@ struct native {
     char *name;
     char *desc;
     unsigned char slots;    /* operand stack slots taken, including any receiver */
-    unsigned char returns;  /* pushes a result */
+    unsigned char returns;  /* slots of the result: 1 is the returned value, 2 a double left at args */
     native_fn fn;
 };
 
@@ -623,13 +657,20 @@ static jint native_scanner_init(jint *args)
     return 0L;
 }
 
-/* Stops as Scanner would throw InputMismatchException. */
-static void die_not_int(unsigned char *s, unsigned int len)
+/* Stops with a message and the text it is about, where Java would throw an exception. */
+static void die_text(char *msg, unsigned char *s, unsigned int len)
 {
-    print_str("JVM: not an int: ");
+    print_str("JVM: ");
+    print_str(msg);
     print_chars(s, len);
     print_newline();
     exit(1);
+}
+
+/* Stops as Scanner would throw InputMismatchException. */
+static void die_not_int(unsigned char *s, unsigned int len)
+{
+    die_text("not an int: ", s, len);
 }
 
 /* Parses a decimal int with an optional sign, as Scanner.nextInt does. */
@@ -724,6 +765,138 @@ static jint native_parse_int(jint *args)
     return parse_int(s + 3, u2(s + 1));
 }
 
+/* Does s[i..len) start with the ASCII text t? */
+static int starts_with(unsigned char *s, unsigned int i, unsigned int len, char *t)
+{
+    while (*t != 0) {
+        if (i >= len || s[i++] != (unsigned char)*t++)
+            return 0;
+    }
+    return i == len;
+}
+
+/*
+ * Parses a double as Double.parseDouble does, rounded correctly. Rounding
+ * needs only one multiplication or division when the number has at most 15
+ * significant digits and a power of ten of at most 22, as both are then
+ * exact doubles; other numbers stop the program. Hexadecimal is unsupported.
+ */
+static void parse_double(jint *r, unsigned char *s, unsigned int len)
+{
+    jint ten[2];
+    jint digit[2];
+    unsigned int i;
+    unsigned char neg;
+    unsigned char dot;
+    unsigned char seen;         /* a digit */
+    unsigned char digits;       /* significant digits in r */
+    unsigned char exp_neg;
+    unsigned char d;
+    int exp10;
+    int e;
+
+    while (len != 0 && s[len - 1] <= ' ')  /* as String.trim() */
+        len--;
+    i = 0;
+    while (i < len && s[i] <= ' ')
+        i++;
+    neg = 0;
+    if (i < len && (s[i] == '+' || s[i] == '-')) {
+        neg = s[i] == '-';
+        i++;
+    }
+    if (starts_with(s, i, len, "NaN")) {
+        r[0] = 0x7FF80000L;
+        r[1] = 0L;
+        return;
+    }
+    if (starts_with(s, i, len, "Infinity")) {
+        r[0] = neg ? (jint)0xFFF00000UL : 0x7FF00000L;
+        r[1] = 0L;
+        return;
+    }
+
+    d_from_int(D(r), 0L);
+    d_from_int(D(ten), 10L);
+    dot = 0;
+    seen = 0;
+    digits = 0;
+    exp10 = 0;
+    for (; i < len; i++) {
+        if (s[i] == '.' && !dot) {
+            dot = 1;
+            continue;
+        }
+        d = s[i] - '0';
+        if (d > 9)
+            break;
+        seen = 1;
+        if (digits == 0 && d == 0) {        /* a leading zero */
+            if (dot)
+                exp10--;
+        } else if (digits < 15) {
+            d_mul(D(r), D(r), D(ten));      /* exact: r stays below 10^15 */
+            d_from_int(D(digit), (jint)d);
+            d_add(D(r), D(r), D(digit));
+            digits++;
+            if (dot)
+                exp10--;
+        } else if (d != 0) {
+            die_text("unsupported double: ", s, len);
+        } else if (!dot) {
+            exp10++;                        /* a trailing zero */
+        }
+    }
+    if (!seen)
+        die_text("not a double: ", s, len);
+    if (i < len && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+        exp_neg = 0;
+        if (i < len && (s[i] == '+' || s[i] == '-')) {
+            exp_neg = s[i] == '-';
+            i++;
+        }
+        if (i == len)
+            die_text("not a double: ", s, len);
+        e = 0;
+        for (; i < len && (d = s[i] - '0') <= 9; i++) {
+            if (e < 1000)
+                e = (e << 3) + (e << 1) + d;
+        }
+        exp10 += exp_neg ? -e : e;
+    }
+    if (i < len && (s[i] == 'd' || s[i] == 'D' || s[i] == 'f' || s[i] == 'F'))
+        i++;
+    if (i != len)
+        die_text("not a double: ", s, len);
+
+    if (digits != 0) {
+        if (exp10 > 22 || exp10 < -22)
+            die_text("unsupported double: ", s, len);
+        d_from_int(D(digit), 1L);           /* 10^|exp10|, exact */
+        for (e = exp10 < 0 ? -exp10 : exp10; e != 0; e--)
+            d_mul(D(digit), D(digit), D(ten));
+        if (exp10 < 0)
+            d_div(D(r), D(r), D(digit));
+        else
+            d_mul(D(r), D(r), D(digit));
+    }
+    if (neg)
+        d_neg(D(r), D(r));
+}
+
+/* Returns its double in args[0] and args[1], as natives[] says it takes two slots */
+static jint native_parse_double(jint *args)
+{
+    unsigned char *s;
+
+    if (args[0] == 0L)
+        die("not a double: null");
+    s = DEREF(args[0]);
+    parse_double(args, s + 3, u2(s + 1));
+    return 0L;
+}
+
 static jint native_abs(jint *args)
 {
     return args[0] < 0L ? ~args[0] + 1L : args[0];  /* Integer.MIN_VALUE stays negative */
@@ -750,6 +923,7 @@ static struct native natives[] = {
     { "java/util/Scanner",   "nextInt",  "()I",                      1, 1, native_next_int },
     { "java/util/Scanner",   "close",    "()V",                      1, 0, native_close },
     { "java/lang/Integer",   "parseInt", "(Ljava/lang/String;)I",    1, 1, native_parse_int },
+    { "java/lang/Double",    "parseDouble", "(Ljava/lang/String;)D", 1, 2, native_parse_double },
     { "java/lang/Math",      "abs",      "(I)I",                     1, 1, native_abs },
     { "java/lang/Math",      "max",      "(II)I",                    2, 1, native_max },
     { "java/lang/Math",      "min",      "(II)I",                    2, 1, native_min }
@@ -859,6 +1033,7 @@ static void run(void)
     jint a;
     jint b;
     unsigned char op;
+    unsigned char n;
     struct native *m;
 
     if (max_stack + max_locals > MAX_FRAME)
@@ -888,10 +1063,24 @@ static void run(void)
             *sp++ = (jint)(int)u2(pc + 1);
             pc += 3;
             break;
+        case OP_DCONST_0: case OP_DCONST_1:
+            d_from_int(D(sp), (jint)(op - OP_DCONST_0));
+            sp += 2;
+            pc++;
+            break;
+        case OP_LDC2_W:
+            e = cp[u2(pc + 1)];
+            if (*e != TAG_DOUBLE)
+                die("ldc2_w: only double supported");
+            sp[0] = u4(e + 1);
+            sp[1] = u4(e + 5);
+            sp += 2;
+            pc += 3;
+            break;
         case OP_LDC:
             e = cp[pc[1]];
             if (*e == TAG_INTEGER)
-                *sp++ = ((unsigned long)u2(e + 1) << 16) | (unsigned long)u2(e + 3);
+                *sp++ = u4(e + 1);
             else if (*e == TAG_STRING)
                 *sp++ = REF(cp[u2(e + 1)]);
             else
@@ -922,6 +1111,30 @@ static void run(void)
             frame[op - OP_ASTORE_0] = *--sp;
             pc++;
             break;
+        case OP_DLOAD: case OP_DLOAD_0: case OP_DLOAD_1: case OP_DLOAD_2: case OP_DLOAD_3:
+            if (op == OP_DLOAD) {
+                n = pc[1];
+                pc += 2;
+            } else {
+                n = op - OP_DLOAD_0;
+                pc++;
+            }
+            sp[0] = frame[n];
+            sp[1] = frame[n + 1];
+            sp += 2;
+            break;
+        case OP_DSTORE: case OP_DSTORE_0: case OP_DSTORE_1: case OP_DSTORE_2: case OP_DSTORE_3:
+            if (op == OP_DSTORE) {
+                n = pc[1];
+                pc += 2;
+            } else {
+                n = op - OP_DSTORE_0;
+                pc++;
+            }
+            sp -= 2;
+            frame[n] = sp[0];
+            frame[n + 1] = sp[1];
+            break;
         case OP_IADD:
             b = *--sp;
             sp[-1] = sp[-1] + b;
@@ -944,6 +1157,37 @@ static void run(void)
             break;
         case OP_INEG:
             sp[-1] = ~sp[-1] + 1L;
+            pc++;
+            break;
+        case OP_DADD: case OP_DSUB: case OP_DMUL: case OP_DDIV:
+            sp -= 2;
+            if (op == OP_DADD)
+                d_add(D(sp - 2), D(sp - 2), D(sp));
+            else if (op == OP_DSUB)
+                d_sub(D(sp - 2), D(sp - 2), D(sp));
+            else if (op == OP_DMUL)
+                d_mul(D(sp - 2), D(sp - 2), D(sp));
+            else
+                d_div(D(sp - 2), D(sp - 2), D(sp));
+            pc++;
+            break;
+        case OP_DNEG:
+            d_neg(D(sp - 2), D(sp - 2));
+            pc++;
+            break;
+        case OP_I2D:
+            d_from_int(D(sp - 1), sp[-1]);
+            sp++;
+            pc++;
+            break;
+        case OP_D2I:
+            sp[-2] = d_to_int(D(sp - 2));
+            sp--;
+            pc++;
+            break;
+        case OP_DCMPL: case OP_DCMPG:  /* they differ only for NaN */
+            sp -= 3;
+            sp[-1] = (jint)d_cmp(D(sp - 1), D(sp + 1), op == OP_DCMPG ? 1 : -1);
             pc++;
             break;
         case OP_IINC:
@@ -984,16 +1228,18 @@ static void run(void)
             if (*sp == 0L)
                 die("null pointer");
             a = m->fn(sp);
-            if (m->returns)
-                *sp++ = a;
+            if (m->returns == 1)
+                *sp = a;
+            sp += m->returns;
             pc += 3;
             break;
         case OP_INVOKESTATIC:
             m = resolve_method(u2(pc + 1));
             sp = &sp[-(int)m->slots];
             a = m->fn(sp);
-            if (m->returns)
-                *sp++ = a;
+            if (m->returns == 1)
+                *sp = a;
+            sp += m->returns;
             pc += 3;
             break;
         case OP_NEW:
@@ -1005,8 +1251,18 @@ static void run(void)
             sp++;
             pc++;
             break;
+        case OP_DUP2:
+            sp[0] = sp[-2];
+            sp[1] = sp[-1];
+            sp += 2;
+            pc++;
+            break;
         case OP_POP:
             --sp;
+            pc++;
+            break;
+        case OP_POP2:
+            sp -= 2;
             pc++;
             break;
         default:
