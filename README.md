@@ -6,9 +6,17 @@ It is basic because of the constraints of the target machine: currently enough t
 
 Of course it was vibecoded.
 
-| [`HelloWorld.java`](examples/HelloWorld.java) | [`Fibonacci.java`](examples/Fibonacci.java) |
-|---|---|
-| ![Hello world from Java on a Spectrum screen](docs/HelloWorld.png) | ![The first 15 Fibonacci numbers on a Spectrum screen](docs/Fibonacci.png) |
+[`HelloWorld.java`](examples/HelloWorld.java):
+
+![Hello world from Java on a Spectrum screen](docs/HelloWorld.png)
+
+[`Fibonacci.java`](examples/Fibonacci.java):
+
+![The first 15 Fibonacci numbers on a Spectrum screen](docs/Fibonacci.png)
+
+[`Loan.java`](examples/Loan.java), for a 15-year loan:
+
+![The monthly payment and yearly balances of a 15-year loan on a Spectrum screen](docs/Loan.png)
 
 ## Requirements
 
