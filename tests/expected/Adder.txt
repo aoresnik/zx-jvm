@@ -1,0 +1,149 @@
+What is your name?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+AndrejL
+--- typed: Andrej
+What is your name? Andrej
+Hello, Andrej!
+Enter numbers to add, 0 to stop.
+Number:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+12L
+--- typed: 12
+What is your name? Andrej
+Hello, Andrej!
+Enter numbers to add, 0 to stop.
+Number: 12
+Number:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-5 30L
+--- typed: -5 30
+What is your name? Andrej
+Hello, Andrej!
+Enter numbers to add, 0 to stop.
+Number: 12
+Number: -5 30
+Number: Number:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+7L
+--- typed: 7
+What is your name? Andrej
+Hello, Andrej!
+Enter numbers to add, 0 to stop.
+Number: 12
+Number: -5 30
+Number: Number: 7
+Number:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+0L
+--- typed: 0
+What is your name? Andrej
+Hello, Andrej!
+Enter numbers to add, 0 to stop.
+Number: 12
+Number: -5 30
+Number: Number: 7
+Number: 0
+Count:   4
+Total:   44
+Largest: 30
+
+
+
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1

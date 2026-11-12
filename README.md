@@ -35,6 +35,12 @@ For the classic first program, [`examples/HelloWorld.java`](examples/HelloWorld.
 make run CLASS=HelloWorld
 ```
 
+[`examples/Adder.java`](examples/Adder.java) reads input. It asks for your name, then adds up numbers until you enter 0 and shows their count, total and largest value:
+
+```sh
+make run CLASS=Adder
+```
+
 ## Running your own class
 
 Your class must be in the default package and stay within the [supported features](#what-is-supported).
@@ -194,7 +200,7 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 
 | Test | What it covers |
 |---|---|
-| `Fibonacci`, `HelloWorld` | The example programs |
+| `Fibonacci`, `HelloWorld`, `Adder` | The example programs |
 | `Edge` | Int limits, overflow, negative constants, branches |
 | `Scroll` | 32-bit wraparound, a countdown loop, paging through three screens |
 | `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
