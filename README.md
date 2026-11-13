@@ -100,7 +100,7 @@ The JVM runs `public static void main(String[])` from one class.
 | Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `ifnull`, `ifnonnull`, `if_acmpeq`, `if_acmpne`, `goto` |
 | Return | `return` |
 | Objects and calls | `new`, `dup`, `dup2`, `pop`, `pop2`, `invokevirtual`, `invokespecial`, `invokestatic`, `getstatic`, only for the runtime classes below |
-| Runtime | `System.out.print` and `println` of `int` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()`; `Integer.parseInt(String)`; `Double.parseDouble(String)`; `Math.abs`, `Math.max` and `Math.min` of `int` |
+| Runtime | `System.out.print` and `println` of `int`, `double` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()`; `Integer.parseInt(String)`; `Double.parseDouble(String)`; `Double.toString(double)` and `String.valueOf(double)`; `Math.abs`, `Math.max` and `Math.min` of `int` |
 
 Strings are constants or lines read with `Scanner`. They can be stored in local variables and compared with `==` and `!=`. As in Java, equal string literals in a class are the same object. Constant expressions such as `"a" + "b"` work because `javac` joins them, but `"x = " + x` needs `invokedynamic` and is unsupported; print the parts separately instead.
 
@@ -144,7 +144,19 @@ Division by zero stops the program with `JVM: / by zero`, where Java would throw
 
 `double` follows IEEE 754 exactly, as Java requires. Every result is rounded the same way as on any other JVM, including infinities, NaN, `-0.0` and the smallest (subnormal) numbers. The arithmetic is done in software, so it is slow: on a real Spectrum, an addition takes about 5 ms, a multiplication about 11 ms and a division about 17 ms. `Loan` works a year at a time rather than a month at a time to stay quick.
 
-Printing a `double` is unsupported, because matching Java's digits exactly would take too much code. Instead, convert it to whole units, as `Loan` does for cents:
+`System.out.println(d)`, `Double.toString(d)` and `String.valueOf(d)` print a `double` as Java does, except for the number of digits. Java prints as many digits as it takes to tell the `double` apart from its neighbours, up to 17. Finding those exactly needs arithmetic on numbers of up to about 1100 bits, which would take too much code. The JVM rounds to at most 15 significant digits instead, then drops trailing zeros. Any decimal of up to 15 digits, such as anything typed in, prints as written:
+
+| Value | Java | zx-jvm |
+|---|---|---|
+| `0.1`, `825.37`, `1e-5` | `0.1`, `825.37`, `1.0E-5` | The same |
+| `1.0 / 3` | `0.3333333333333333` | `0.333333333333333` |
+| `0.1 + 0.2` | `0.30000000000000004` | `0.3` |
+| `Double.MAX_VALUE` | `1.7976931348623157E308` | `1.79769313486232E308` |
+| `Double.MIN_VALUE` | `4.9E-324` | `4.94065645841247E-324` |
+
+So two different `double`s can print the same, as `0.1 + 0.2` and `0.3` do, which matters when you compare doubles: compare them in the program, not by their printed text. The layout follows Java: from 0.001 up to 10,000,000 without an exponent, as `1234.5`, and otherwise as `1.2345E7`, with at least one digit after the point. In rare cases, when a value is within a thousandth of a unit from halfway between two 15-digit decimals, the last digit is rounded the other way. Printing a number takes about 40 to 60 ms, and up to 125 ms for very large or very small exponents.
+
+Java's `println` doesn't format money: `825.5` prints as `825.5`, not `825.50`, and `String.format` is unsupported. To print a fixed number of decimals, convert to whole units, as `Loan` does for cents:
 
 ```java
 int cents = (int) (amount * 100 + 0.5);
@@ -159,7 +171,7 @@ To read a `double`, use `Double.parseDouble(in.nextLine())`. `Scanner.nextDouble
 
 ### Unsupported features
 
-Everything else is unsupported, including other types such as `long` and `float`, printing a `double`, `char` output, string operations, arrays, your own objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
+Everything else is unsupported, including other types such as `long` and `float`, `char` output, string operations, arrays, your own objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
 
 Unsupported features stop the program with an error rather than misbehaving:
 
@@ -192,7 +204,7 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 | Address | Contents |
 |---|---|
 | Up to 25599 | BASIC: the loader, the input line and the machine stack, with about 1.8 KB to spare |
-| 25600 | JVM, about 20 KB; the build fails if it would reach the class |
+| 25600 | JVM, about 23 KB; the build fails if it would reach the class |
 | 49152 | Class file |
 | After the class file, up to 65367 | Heap |
 | 65368 | User-defined graphics, as usual |
@@ -201,7 +213,7 @@ The JVM's address is `JVM_ADDR` in the Makefile.
 
 The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`, and a reference in the same slot holds a 16-bit address, with `null` as 0. A `double` takes two slots, as in Java.
 
-The `double` arithmetic is in [`src/double.c`](src/double.c), modelled on [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html). It works on 64-bit significands kept as two 32-bit words, because sccz80 has no 64-bit integer type. Its innermost parts, such as the multiplication loop, are in Z80 code, which made them up to five times faster. The C versions of those parts remain for testing on the host.
+The `double` arithmetic is in [`src/double.c`](src/double.c), modelled on [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html). It works on 64-bit significands kept as two 32-bit words, because sccz80 has no 64-bit integer type. Its innermost parts, such as the multiplication loop, are in Z80 code, which made them up to five times faster. The C versions of those parts remain for testing on the host. To print a `double`, it scales the number by a power of ten to between 10^14 and 10^15, using 64-bit significands for the powers of ten, and rounds that to an integer, which gives the 15 digits.
 
 Every string has the layout of a `CONSTANT_Utf8` entry. A constant string is its entry in the class file, so it needs no copying, and a line read with `Scanner` is allocated on the heap. `System.out`, `System.in` and `Scanner` objects are one byte that identifies their class.
 
@@ -228,6 +240,8 @@ The JVM is compiled with sccz80, which miscompiled some valid C in this project.
 | `(signed char)` cast of a byte | Loses the sign | The `s1()` helper |
 | `s.a[i]`, for an array `a` in a local struct `s` | Ignores the offset of `a` in the struct | A pointer: `p = &s;` then `p->a[i]` |
 | `e <= 0`, for an `int` `e` | Tests the sign with a carry flag left over from the previous instruction | `e < 1` |
+| `1UL << n` | Computes `n << 1` | Shifts by a constant, or a variable shifted (`x >> n` works) |
+| `P[i]`, for a constant pointer `P` such as `((long *)0xC000)` | Ignores `i` | A pointer variable |
 
 ## Tests
 
@@ -248,6 +262,7 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 | `Edge` | Int limits, overflow, negative constants, branches |
 | `Arithmetic` | Multiplication, division and remainder with every sign and overflow, divisors over 16 bits, `ineg`, the static runtime methods, `parseInt("")` |
 | `Doubles` | Each `double` operation, compared with the same expression on constants, which `javac` evaluates itself; infinities, NaN, `-0.0`, subnormals, conversions, `parseDouble` |
+| `PrintDoubles` | Printing doubles with and without an exponent, special values, and the differences from Java listed in [Doubles](#doubles) |
 | `Scroll` | 32-bit wraparound, a countdown loop, paging through three screens |
 | `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
 | `LongString` | The `scroll?` prompt caused only by wrapped text |
@@ -263,8 +278,8 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 
 Before those, `make test` runs two tests of the `double` arithmetic on its own, which `make test-double` also runs:
 
-- [`tests/double/host_test.c`](tests/double/host_test.c) compiles `src/double.c` for the host and compares it with the host's IEEE 754 hardware on special values and a million random operand pairs. The random numbers are chosen so that rounding ties, cancellation, subnormals and overflow all occur.
-- [`tests/double/z80_test.py`](tests/double/z80_test.py) runs the same code compiled by sccz80, including the Z80 parts, in SkoolKit's simulator, and compares thousands of results with Python's floats. This catches miscompilations, which the host can't.
+- [`tests/double/host_test.c`](tests/double/host_test.c) compiles `src/double.c` for the host and compares it with the host's IEEE 754 hardware on special values and a million random operand pairs. The random numbers are chosen so that rounding ties, cancellation, subnormals and overflow all occur. It also compares the 15 digits for printing with the C library's `printf`, which rounds exactly, and reports how many came out the other way because they were almost exactly halfway.
+- [`tests/double/z80_test.py`](tests/double/z80_test.py) runs the same code compiled by sccz80, including the Z80 parts, in SkoolKit's simulator, and compares thousands of results with Python's floats and its formatting of them. This catches miscompilations, which the host can't.
 
 The tests need Python 3 with the `venv` module. `make test` creates a Python environment in `.venv` with the SkoolKit version from `tests/requirements.txt`; you can also create it with `make venv`. To use another interpreter that has SkoolKit installed, set `PYTHON`.
 

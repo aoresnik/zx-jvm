@@ -11,6 +11,7 @@ with round to nearest, ties to even, as Java's double is.
 
 import argparse
 import contextlib
+import decimal
 import io
 import math
 import random
@@ -29,8 +30,8 @@ PER_BATCH = (0x10000 - VECTORS) // VECTOR_SIZE
 STOP = 0xBFF0           # where main returns to, as to BASIC after USR
 STACK = 0xBFE0
 
-OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_CMPL, OP_CMPG, OP_D2I, OP_I2D, OP_NEG = range(9)
-OP_NAMES = ['add', 'sub', 'mul', 'div', 'cmpl', 'cmpg', 'd2i', 'i2d', 'neg']
+OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_CMPL, OP_CMPG, OP_D2I, OP_I2D, OP_NEG, OP_DEC = range(10)
+OP_NAMES = ['add', 'sub', 'mul', 'div', 'cmpl', 'cmpg', 'd2i', 'i2d', 'neg', 'decimal']
 
 SPECIALS = [
     0x0000000000000000, 0x8000000000000000,     # zeros
@@ -124,6 +125,24 @@ def expected(op, a, b):
     return a ^ 0x8000000000000000         # OP_NEG
 
 
+def is_finite_nonzero(u):
+    return (u & 0x7FFFFFFFFFFFFFFF) != 0 and (u & 0x7FF0000000000000) != 0x7FF0000000000000
+
+
+def expected_decimal(a):
+    """The 15 digits and the exponent's low byte, and whether |a| is almost halfway.
+
+    The scaling by 10^k in d_to_decimal is not exact, so the last digit may go
+    the other way when |a| is within a thousandth of a unit of halfway.
+    """
+    x = abs(to_float(a))
+    mantissa, _, exp = ('%.14e' % x).partition('e')
+    exact = '%.40e' % decimal.Decimal(x)
+    beyond = int(exact[16:20])
+    return (mantissa.replace('.', '').encode() + bytes([int(exp) & 0xFF]),
+            4990 <= beyond <= 5009)
+
+
 def pack_double(u):
     return struct.pack('<II', u >> 32, u & 0xFFFFFFFF)
 
@@ -154,8 +173,8 @@ def run_batch(rom, driver, vectors):
     memory = simulator.memory       # the C simulator works on a copy
     results = []
     for i in range(len(vectors)):
-        addr = VECTORS + i * VECTOR_SIZE + 17
-        results.append(unpack_double(memory[addr:addr + 8]))
+        addr = VECTORS + i * VECTOR_SIZE + 9
+        results.append(bytes(memory[addr:addr + 16]))      # b and r
     return results
 
 
@@ -174,20 +193,37 @@ def main():
 
     rng = random.Random(1)
     vectors = [(op, a, b) for a in SPECIALS for b in SPECIALS for op in range(9)]
+    vectors += [(OP_DEC, a, 0) for a in SPECIALS if is_finite_nonzero(a)]
     total = 0
     failures = 0
+    near_halfway = 0
     for batch in range(args.batches + (len(vectors) + PER_BATCH - 1) // PER_BATCH):
         if not vectors:
             while len(vectors) < PER_BATCH:
-                op = rng.randrange(9)
-                if op == OP_I2D:
+                op = rng.randrange(10)
+                if op == OP_DEC:
+                    a = random_double(rng, 0)
+                    if is_finite_nonzero(a):
+                        vectors.append((op, a, 0))
+                elif op == OP_I2D:
                     i = rng.getrandbits(32) >> rng.choice([0, 0, rng.randrange(32)])
                     vectors.append((op, i << 32, 0))
                 else:
                     a = random_double(rng, 0)
                     vectors.append((op, a, random_double(rng, a)))
         chunk, vectors = vectors[:PER_BATCH], vectors[PER_BATCH:]
-        for (op, a, b), got in zip(chunk, run_batch(rom, driver, chunk)):
+        for (op, a, b), result in zip(chunk, run_batch(rom, driver, chunk)):
+            if op == OP_DEC:
+                want, almost_halfway = expected_decimal(a)
+                if result != want:
+                    if almost_halfway:
+                        near_halfway += 1
+                    else:
+                        failures += 1
+                        if failures <= 20:
+                            print(f'FAIL decimal {a:016x}: got {result!r}, want {want!r}')
+                continue
+            got = unpack_double(result[8:])
             want = expected(op, a, b)
             if op in (OP_CMPL, OP_CMPG, OP_D2I):
                 got &= 0xFFFFFFFF00000000
@@ -196,7 +232,8 @@ def main():
                 if failures <= 20:
                     print(f'FAIL {OP_NAMES[op]} {a:016x} {b:016x}: got {got:016x}, want {want:016x}')
         total += len(chunk)
-    print(f'{total} operations on the Z80, {failures} failures')
+    print(f'{total} operations on the Z80, {failures} failures, '
+          f'{near_halfway} decimals rounded the other way as almost halfway')
     return 1 if failures else 0
 
 

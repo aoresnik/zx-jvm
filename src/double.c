@@ -1046,3 +1046,157 @@ int d_cmp(uint32_t *a, uint32_t *b, int nan_result)
     less = less64(a, b);                /* compares magnitudes, as the signs are equal */
     return less != sign ? -1 : 1;
 }
+
+/* ---- Decimal digits ---- */
+
+/* 10^(2^i) = sig * 2^(exp - 63), the significand rounded from 10^32 up */
+static int pow10_exp[9] = { 3, 6, 13, 26, 53, 106, 212, 425, 850 };
+static uint32_t pow10_sig[18] = {
+    0xA0000000UL, 0x00000000UL,         /* 10^1 */
+    0xC8000000UL, 0x00000000UL,         /* 10^2 */
+    0x9C400000UL, 0x00000000UL,         /* 10^4 */
+    0xBEBC2000UL, 0x00000000UL,         /* 10^8 */
+    0x8E1BC9BFUL, 0x04000000UL,         /* 10^16 */
+    0x9DC5ADA8UL, 0x2B70B59EUL,         /* 10^32 */
+    0xC2781F49UL, 0xFFCFA6D5UL,         /* 10^64 */
+    0x93BA47C9UL, 0x80E98CE0UL,         /* 10^128 */
+    0xAA7EEBFBUL, 0x9DF9DE8EUL          /* 10^256 */
+};
+
+/* 10^15 down to 10^1 as 64-bit integers */
+static uint32_t pow10_int[30] = {
+    0x00038D7EUL, 0xA4C68000UL, 0x00005AF3UL, 0x107A4000UL, 0x00000918UL, 0x4E72A000UL,
+    0x000000E8UL, 0xD4A51000UL, 0x00000017UL, 0x4876E800UL, 0x00000002UL, 0x540BE400UL,
+    0x00000000UL, 0x3B9ACA00UL, 0x00000000UL, 0x05F5E100UL, 0x00000000UL, 0x00989680UL,
+    0x00000000UL, 0x000F4240UL, 0x00000000UL, 0x000186A0UL, 0x00000000UL, 0x00002710UL,
+    0x00000000UL, 0x000003E8UL, 0x00000000UL, 0x00000064UL, 0x00000000UL, 0x0000000AUL
+};
+
+static uint32_t e15_sig[2] = { 0xE35FA931UL, 0xA0000000UL };   /* 10^15 = sig * 2^(49 - 63) */
+static uint32_t e14_sig[2] = { 0xB5E620F4UL, 0x80000000UL };   /* 10^14 = sig * 2^(46 - 63) */
+
+/*
+ * s = |a| * 10^p, normalized. 10^p is exact up to 10^27; beyond that, and in
+ * the product or quotient, each step is jammed to 64 bits, so the result is
+ * within a few parts in 2^64.
+ */
+static void scale10(struct unpacked *s, struct unpacked *a, int p)
+{
+    uint32_t pw[2];
+    uint32_t q[2];
+    int pw_exp;
+    unsigned char i;
+    unsigned char divide;
+
+    divide = p < 0;
+    if (divide)
+        p = -p;
+    pw[0] = SIGN_BIT;                   /* 1 */
+    pw[1] = 0;
+    pw_exp = 0;
+    for (i = 0; p != 0; i++, p >>= 1) {
+        if (p & 1) {
+            mul64(pw, pow10_sig + 2 * i);
+            pw_exp += pow10_exp[i] + 1;
+            if ((pw[0] & SIGN_BIT) == 0) {
+                shl1(pw);
+                pw_exp--;
+            }
+        }
+    }
+    s->sig[0] = a->sig[0];
+    s->sig[1] = a->sig[1];
+    s->exp = a->exp;
+    if (!divide) {
+        mul64(s->sig, pw);
+        s->exp += pw_exp + 1;
+    } else {                            /* as in d_div */
+        shr_jam(s->sig, 1);
+        shr_jam(pw, 1);
+        s->exp -= pw_exp;
+        if (less64(s->sig, pw)) {
+            shl1(s->sig);
+            s->exp--;
+        }
+        div64(s->sig, pw, q);
+        if ((s->sig[0] | s->sig[1]) != 0)
+            q[1] |= 1;
+        s->sig[0] = q[0];
+        s->sig[1] = q[1];
+    }
+    normalize(s);
+}
+
+static int too_big(struct unpacked *s)  /* s >= 10^15 */
+{
+    return s->exp > 49 || (s->exp == 49 && !less64(s->sig, e15_sig));
+}
+
+static int too_small(struct unpacked *s)        /* s < 10^14 */
+{
+    return s->exp < 46 || (s->exp == 46 && less64(s->sig, e14_sig));
+}
+
+int d_to_decimal(uint32_t *a, char *digits)
+{
+    struct unpacked x;
+    struct unpacked y;
+    struct unpacked *u;
+    struct unpacked *s;
+    uint32_t n[2];
+    uint32_t below;
+    int k;
+    unsigned char i;
+    char digit;
+
+    u = &x;                             /* sccz80 indexes x.sig[i] at the wrong offset */
+    s = &y;
+    unpack(u, a);
+
+    /* k is about log10(2^exp), with log10(2) about 1233 / 4096, and then corrected */
+    if (u->exp >= 0)
+        k = (int)((long)u->exp * 1233L / 4096L);
+    else
+        k = -(int)(((long)-u->exp * 1233L + 4095L) / 4096L);
+    scale10(s, u, 14 - k);
+    while (too_big(s)) {
+        k++;
+        scale10(s, u, 14 - k);
+    }
+    while (too_small(s)) {
+        k--;
+        scale10(s, u, 14 - k);
+    }
+
+    /*
+     * Round s, in [10^14, 10^15), to an integer, ties to even. As in pack, the
+     * fraction is first shifted to the low 11 bits, as masks made with
+     * 1UL << n come out wrong: sccz80 computes n << 1.
+     */
+    n[0] = s->sig[0];
+    n[1] = s->sig[1];
+    shr_jam(n, 52 - s->exp);            /* 3 to 6 */
+    below = n[1] & 0x7FF;
+    n[1] = (n[1] >> 11) | (n[0] << 21);
+    n[0] >>= 11;
+    if (below > 0x400 || (below == 0x400 && (n[1] & 1) != 0)) {
+        if (++n[1] == 0)
+            n[0]++;
+    }
+    if (!less64(n, pow10_int)) {        /* rounded up to 10^15 */
+        n[0] = pow10_int[2];
+        n[1] = pow10_int[3];
+        k++;
+    }
+
+    for (i = 0; i < 14; i++) {
+        digit = '0';
+        while (!less64(n, pow10_int + 2 * i + 2)) {
+            sub64(n, pow10_int + 2 * i + 2);
+            digit++;
+        }
+        digits[i] = digit;
+    }
+    digits[14] = '0' + (char)n[1];
+    return k;
+}

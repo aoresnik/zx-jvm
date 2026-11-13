@@ -24,7 +24,7 @@ fi
 if [ $# -gt 0 ]; then
     names=("$@")
 else
-    names=(Fibonacci HelloWorld Adder Loan Edge Arithmetic Doubles Scroll Strings LongString
+    names=(Fibonacci HelloWorld Adder Loan Edge Arithmetic Doubles PrintDoubles Scroll Strings LongString
            References Input InputInts BadOpcode BadMethod BadInput BadDouble DivideByZero NoMain)
 fi
 

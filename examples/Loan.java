@@ -34,7 +34,7 @@ public class Loan {
             yearPayments = (yearGrowth - 1) / rate;
         }
 
-        // Amounts are printed in whole cents, as printing a double is unsupported
+        // Amounts are printed in whole cents, as println(825.5) prints 825.5, not 825.50
         int cents = (int) (payment * 100 + 0.5);
         System.out.print("Monthly payment: ");
         System.out.print(cents / 100);

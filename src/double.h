@@ -24,4 +24,11 @@ int32_t d_to_int(uint32_t *a);
 /* -1, 0 or 1, or nan_result if either is NaN, as Java's dcmpl and dcmpg */
 int d_cmp(uint32_t *a, uint32_t *b, int nan_result);
 
+/*
+ * Writes the first 15 significant digits of |a|, rounded to nearest, as the
+ * characters '0' to '9' and returns the decimal exponent k, so that |a| is
+ * about d.dddddddddddddd * 10^k. a must be finite and not zero.
+ */
+int d_to_decimal(uint32_t *a, char *digits);
+
 #endif

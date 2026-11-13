@@ -25,6 +25,7 @@
 #pragma output CLIB_STDIO_HEAP_SIZE = 0
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "double.h"
 
@@ -631,6 +632,108 @@ static jint native_println_int(jint *args)
     return 0L;
 }
 
+static char double_text[24];    /* the longest is -1.23456789012345E-308 */
+static char *text_end;
+static char double_digits[15];
+
+static void put(char c) __z88dk_fastcall
+{
+    *text_end++ = c;
+}
+
+static void put_str(char *s)
+{
+    while (*s)
+        put(*s++);
+}
+
+/*
+ * Writes a double to double_text as Double.toString does, except with at most
+ * 15 significant digits: Java prints as many as it takes to tell the double
+ * from its neighbours, up to 17. Returns the length.
+ */
+static unsigned char format_double(jint *v)
+{
+    unsigned long high;
+    int k;          /* the power of ten of the first digit */
+    int low;        /* and of the last one written */
+    int exp;
+    int p;
+
+    text_end = double_text;
+    high = (unsigned long)v[0] & 0x7FFFFFFFUL;
+    if (high > 0x7FF00000UL || (high == 0x7FF00000UL && v[1] != 0L))
+        put_str("NaN");
+    else {
+        if (v[0] < 0L)
+            put('-');
+        if (high == 0x7FF00000UL)
+            put_str("Infinity");
+        else if (high == 0UL && v[1] == 0L)
+            put_str("0.0");
+        else {
+            k = d_to_decimal(D(v), double_digits);
+            low = k - 14;
+            while (double_digits[k - low] == '0')
+                low++;
+            exp = 0;
+            if (k < -3 || k >= 7) {     /* not 0.001 to 9999999.99...: as 1.25E-5 */
+                exp = k;
+                low -= k;
+                k = 0;
+            }
+            if (low > -1)
+                low = -1;               /* at least one digit after the point */
+            for (p = k > 0 ? k : 0; p >= low; p--) {
+                put(p > k ? '0' : double_digits[k - p]);
+                if (p == 0)
+                    put('.');
+            }
+            if (exp != 0) {
+                put('E');
+                if (exp < 0) {
+                    put('-');
+                    exp = -exp;
+                }
+                if (exp >= 100)
+                    put('0' + exp / 100);
+                if (exp >= 10)
+                    put('0' + exp / 10 % 10);
+                put('0' + exp % 10);
+            }
+        }
+    }
+    *text_end = 0;
+    return (unsigned char)(text_end - double_text);
+}
+
+static jint native_print_double(jint *args)
+{
+    format_double(args + 1);
+    print_str(double_text);
+    return 0L;
+}
+
+static jint native_println_double(jint *args)
+{
+    format_double(args + 1);
+    print_str(double_text);
+    print_newline();
+    return 0L;
+}
+
+/* Double.toString and String.valueOf */
+static jint native_double_to_string(jint *args)
+{
+    unsigned char *s;
+    unsigned char len;
+
+    len = format_double(args);
+    s = new_string(len);
+    memcpy(s + 3, double_text, len);
+    return REF(s);
+}
+
 static jint native_print_string(jint *args)
 {
     print_string(args[1]);
@@ -917,6 +1020,8 @@ static struct native natives[] = {
     { "java/io/PrintStream", "println",  "(I)V",                     2, 0, native_println_int },
     { "java/io/PrintStream", "print",    "(Ljava/lang/String;)V",    2, 0, native_print_string },
     { "java/io/PrintStream", "println",  "(Ljava/lang/String;)V",    2, 0, native_println_string },
+    { "java/io/PrintStream", "print",    "(D)V",                     3, 0, native_print_double },
+    { "java/io/PrintStream", "println",  "(D)V",                     3, 0, native_println_double },
     { "java/io/PrintStream", "println",  "()V",                      1, 0, native_println },
     { "java/util/Scanner",   "<init>",   "(Ljava/io/InputStream;)V", 2, 0, native_scanner_init },
     { "java/util/Scanner",   "nextLine", "()Ljava/lang/String;",     1, 1, native_next_line },
@@ -924,6 +1029,8 @@ static struct native natives[] = {
     { "java/util/Scanner",   "close",    "()V",                      1, 0, native_close },
     { "java/lang/Integer",   "parseInt", "(Ljava/lang/String;)I",    1, 1, native_parse_int },
     { "java/lang/Double",    "parseDouble", "(Ljava/lang/String;)D", 1, 2, native_parse_double },
+    { "java/lang/Double",    "toString", "(D)Ljava/lang/String;",    2, 1, native_double_to_string },
+    { "java/lang/String",    "valueOf",  "(D)Ljava/lang/String;",    2, 1, native_double_to_string },
     { "java/lang/Math",      "abs",      "(I)I",                     1, 1, native_abs },
     { "java/lang/Math",      "max",      "(II)I",                    2, 1, native_max },
     { "java/lang/Math",      "min",      "(II)I",                    2, 1, native_min }

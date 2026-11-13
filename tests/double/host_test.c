@@ -150,6 +150,43 @@ static void test_pair(uint64_t a, uint64_t b)
     check("d2i", a, 0, (uint64_t)(int64_t)d_to_int(x), (uint64_t)(int64_t)java_d2i(da));
 }
 
+static long decimals;
+static long near_halfway;
+
+/*
+ * Compares d_to_decimal with glibc's printf, which rounds exactly. The
+ * scaling by 10^k is not exact, so the last digit may go the other way when
+ * |a| is within a thousandth of a unit of halfway between two decimals.
+ */
+static void test_decimal(uint64_t a)
+{
+    uint32_t x[2];
+    char digits[15];
+    char want[40];
+    char exact[60];
+    char got[40];
+    int k;
+    unsigned int beyond;
+
+    if ((a & 0x7FFFFFFFFFFFFFFFULL) == 0 || (a & 0x7FF0000000000000ULL) == 0x7FF0000000000000ULL)
+        return;
+    decimals++;
+    split(a, x);
+    k = d_to_decimal(x, digits);
+    snprintf(got, sizeof got, "%c.%.14se%+03d", digits[0], digits + 1, k);
+    snprintf(want, sizeof want, "%.14e", fabs(from_bits(a)));
+    if (strcmp(got, want) == 0)
+        return;
+    snprintf(exact, sizeof exact, "%.40e", fabs(from_bits(a)));
+    beyond = (unsigned int)atoi((char[]){ exact[16], exact[17], exact[18], exact[19], 0 });
+    if (beyond >= 4990 && beyond <= 5009) {
+        near_halfway++;
+        return;
+    }
+    if (failures++ < 20)
+        printf("FAIL decimal %016llx: got %s, want %s\n", (unsigned long long)a, got, want);
+}
+
 int main(int argc, char **argv)
 {
     long iterations;
@@ -172,7 +209,12 @@ int main(int argc, char **argv)
             v >>= next64() % 32;
         d_from_int(r, v);
         check("i2d", (uint64_t)(uint32_t)v, 0, join(r), bits((double)v));
+        test_decimal(a);
     }
+    for (i = 0; i < SPECIALS; i++)
+        test_decimal(specials[i]);
     printf("%ld operand pairs, %ld failures\n", iterations + SPECIALS * SPECIALS, failures);
+    printf("%ld doubles to decimal, %ld rounded the other way as almost halfway\n",
+           decimals, near_halfway);
     return failures != 0;
 }
