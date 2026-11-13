@@ -142,7 +142,7 @@ Division by zero stops the program with `JVM: / by zero`, where Java would throw
 
 ### Doubles
 
-`double` follows IEEE 754 exactly, as Java requires. Every result is rounded the same way as on any other JVM, including infinities, NaN, `-0.0` and the smallest (subnormal) numbers. The arithmetic is done in software, so it is slow: on a real Spectrum, an addition takes about 5 ms, a multiplication about 11 ms and a division about 17 ms. `Loan` works a year at a time rather than a month at a time to stay quick.
+`double` follows IEEE 754 exactly, as Java requires. Every result is rounded the same way as on any other JVM, including infinities, NaN, `-0.0` and the smallest (subnormal) numbers. The arithmetic is done in software, so it is slow: on a real Spectrum, an addition takes about 4 ms, and a multiplication or a division about 14 ms. `Loan` works a year at a time rather than a month at a time to stay quick.
 
 `System.out.println(d)`, `Double.toString(d)` and `String.valueOf(d)` print a `double` as Java does, except for the number of digits. Java prints as many digits as it takes to tell the `double` apart from its neighbours, up to 17. Finding those exactly needs arithmetic on numbers of up to about 1100 bits, which would take too much code. The JVM rounds to at most 15 significant digits instead, then drops trailing zeros. Any decimal of up to 15 digits, such as anything typed in, prints as written:
 
@@ -154,7 +154,7 @@ Division by zero stops the program with `JVM: / by zero`, where Java would throw
 | `Double.MAX_VALUE` | `1.7976931348623157E308` | `1.79769313486232E308` |
 | `Double.MIN_VALUE` | `4.9E-324` | `4.94065645841247E-324` |
 
-So two different `double`s can print the same, as `0.1 + 0.2` and `0.3` do, which matters when you compare doubles: compare them in the program, not by their printed text. The layout follows Java: from 0.001 up to 10,000,000 without an exponent, as `1234.5`, and otherwise as `1.2345E7`, with at least one digit after the point. In rare cases, when a value is within a thousandth of a unit from halfway between two 15-digit decimals, the last digit is rounded the other way. Printing a number takes about 40 to 60 ms, and up to 125 ms for very large or very small exponents.
+So two different `double`s can print the same, as `0.1 + 0.2` and `0.3` do, which matters when you compare doubles: compare them in the program, not by their printed text. The layout follows Java: from 0.001 up to 10,000,000 without an exponent, as `1234.5`, and otherwise as `1.2345E7`, with at least one digit after the point. In rare cases, when a value is within a thousandth of a unit from halfway between two 15-digit decimals, the last digit is rounded the other way. Printing a number takes about 40 to 60 ms, and up to 140 ms for very large or very small exponents.
 
 Java's `println` doesn't format money: `825.5` prints as `825.5`, not `825.50`, and `String.format` is unsupported. To print a fixed number of decimals, convert to whole units, as `Loan` does for cents:
 
@@ -204,7 +204,7 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 | Address | Contents |
 |---|---|
 | Up to 25599 | BASIC: the loader, the input line and the machine stack, with about 1.8 KB to spare |
-| 25600 | JVM, about 21 KB; the build fails if it would reach the class |
+| 25600 | JVM, about 19 KB; the build fails if it would reach the class |
 | 49152 | Class file |
 | After the class file, up to 65367 | Heap |
 | 65368 | User-defined graphics, as usual |
@@ -213,7 +213,7 @@ The JVM's address is `JVM_ADDR` in the Makefile.
 
 The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`, and a reference in the same slot holds a 16-bit address, with `null` as 0. A `double` takes two slots, as in Java.
 
-The `double` arithmetic is in [`src/double.c`](src/double.c), modelled on [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html). It works on 64-bit significands kept as two 32-bit words, because sccz80 has no 64-bit integer type. Its innermost parts, such as the multiplication loop, are in Z80 code, which made them up to five times faster. The C versions of those parts remain for testing on the host. To print a `double`, it scales the number by a power of ten to between 10^14 and 10^15, using 64-bit significands for the powers of ten, and rounds that to an integer, which gives the 15 digits.
+The `double` arithmetic is in [`src/double.c`](src/double.c), modelled on [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html). The operations, such as addition with its special cases, are in C and work on numbers unpacked into a sign, an exponent and a 64-bit significand. The primitives below them, such as unpacking, packing, rounding and arithmetic on significands, are in Z80 code, because sccz80 has no 64-bit integer type and compiles 32-bit code large and slow: the Z80 code took the JVM from 21 KB to 19 KB. The primitives also have C versions, using `uint64_t`, so that the host test can check the operations. To print a `double`, it scales the number by a power of ten to between 10^14 and 10^15, using 64-bit significands for the powers of ten, and rounds that to an integer, which gives the 15 digits.
 
 Every string has the layout of a `CONSTANT_Utf8` entry. A constant string is its entry in the class file, so it needs no copying, and a line read with `Scanner` is allocated on the heap. `System.out`, `System.in` and `Scanner` objects are one byte that identifies their class.
 
@@ -242,6 +242,7 @@ The JVM is compiled with sccz80, which miscompiled some valid C in this project.
 | `e <= 0`, for an `int` `e` | Tests the sign with a carry flag left over from the previous instruction | `e < 1` |
 | `1UL << n` | Computes `n << 1` | Shifts by a constant, or a variable shifted (`x >> n` works) |
 | `P[i]`, for a constant pointer `P` such as `((long *)0xC000)` | Ignores `i` | A pointer variable |
+| `jp` or `ret` from the `#asm` body of a `__z88dk_fastcall` function | Not a miscompilation, but a trap: the function pushes its argument on entry, so the return goes to that address | `call` the routine, and let the compiler's code return |
 
 ## Tests
 
@@ -278,8 +279,8 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 
 Before those, `make test` runs two tests of the `double` arithmetic on its own, which `make test-double` also runs:
 
-- [`tests/double/host_test.c`](tests/double/host_test.c) compiles `src/double.c` for the host and compares it with the host's IEEE 754 hardware on special values and a million random operand pairs. The random numbers are chosen so that rounding ties, cancellation, subnormals and overflow all occur. It also compares the 15 digits for printing with the C library's `printf`, which rounds exactly, and reports how many came out the other way because they were almost exactly halfway.
-- [`tests/double/z80_test.py`](tests/double/z80_test.py) runs the same code compiled by sccz80, including the Z80 parts, in SkoolKit's simulator, and compares thousands of results with Python's floats and its formatting of them. This catches miscompilations, which the host can't.
+- [`tests/double/host_test.c`](tests/double/host_test.c) compiles `src/double.c` for the host, with the C versions of the primitives, and compares it with the host's IEEE 754 hardware on special values and a million random operand pairs. The random numbers are chosen so that rounding ties, cancellation, subnormals and overflow all occur. It also compares the 15 digits for printing with the C library's `printf`, which rounds exactly, and reports how many came out the other way because they were almost exactly halfway.
+- [`tests/double/z80_test.py`](tests/double/z80_test.py) runs the same code compiled by sccz80, with the Z80 primitives, in SkoolKit's simulator, and compares thousands of results with Python's floats and its formatting of them. This catches miscompilations, which the host can't.
 
 The tests need Python 3 with the `venv` module. `make test` creates a Python environment in `.venv` with the SkoolKit version from `tests/requirements.txt`; you can also create it with `make venv`. To use another interpreter that has SkoolKit installed, set `PYTHON`.
 
