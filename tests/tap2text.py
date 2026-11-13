@@ -7,8 +7,9 @@ against the font in the 48K ROM.
 The tape is loaded on a 48K Spectrum until it jumps to the JVM at 25600, then
 run until the ROM waits for a key (WAIT-KEY):
 
-- At the scroll? prompt, the screen is printed, followed by a
-  "--- key pressed" line, and ENTER is pressed.
+- At the scroll? prompt, or when the JVM waits for a key after showing
+  graphics, the screen is printed, followed by a "--- key pressed" line, and
+  ENTER is pressed.
 - When the program reads a line in the input line (INPUT mode), the next line
   of the input file is typed one key at a time. Python escapes in the file
   give other key codes, such as \\x0c for DELETE or \\xc7 for the <= keyword.
@@ -20,10 +21,12 @@ run until the ROM waits for a key (WAIT-KEY):
 Cells that match no character, in normal or inverse video, are printed as
 U+FFFD.
 
-usage: tap2text.py [--max-seconds N] [--png FILE] [--input FILE] tape.tap
+usage: tap2text.py [--max-seconds N] [--png FILE] [--screen FILE] [--input FILE] tape.tap
 
 --max-seconds  emulated time to allow between key presses (default 60)
 --png          also write an image of the final screen
+--screen       write the screen memory, 6912 bytes, as it is when the JVM
+               waits for a key after showing graphics
 --input        lines to type, one per input request; all must be used
 
 Exit status: 0 finished, 3 did not finish in time (the screen is still
@@ -132,10 +135,11 @@ def press(key, snapshot):
 
 def main():
     parser = argparse.ArgumentParser(
-        usage='tap2text.py [--max-seconds N] [--png FILE] [--input FILE] tape.tap')
+        usage='tap2text.py [--max-seconds N] [--png FILE] [--screen FILE] [--input FILE] tape.tap')
     parser.add_argument('tape')
     parser.add_argument('--max-seconds', type=int, default=60)
     parser.add_argument('--png')
+    parser.add_argument('--screen')
     parser.add_argument('--input')
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding='utf-8')
@@ -171,7 +175,10 @@ def main():
                     return 3
 
                 caller = snapshot.memory[snapshot.sp] | snapshot.memory[snapshot.sp + 1] << 8
-                if caller == SCROLL_RETURN:
+                if caller >= JVM_ADDR and args.screen:
+                    with open(args.screen, 'wb') as f:
+                        f.write(bytes(snapshot.memory[SCREEN_ADDR:SCREEN_ADDR + 6912]))
+                if caller == SCROLL_RETURN or caller >= JVM_ADDR:
                     transcript.append(screen + '\n--- key pressed')
                     key = KEY_ENTER
                 elif caller == EDITOR_RETURN and snapshot.memory[FLAGX] & 0x20:

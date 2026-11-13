@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include "double.h"
+#include "graphics.h"
 
 extern unsigned char _BSS_END_tail[];          /* the end of this program, from the linker */
 #define CLASS_ADDR _BSS_END_tail
@@ -57,6 +58,10 @@ extern unsigned char _BSS_END_tail[];          /* the end of this program, from 
 #define OBJ_INPUTSTREAM 0x81
 #define OBJ_SCANNER     0x82
 #define OBJ_OWN         0x83    /* an object of the program's own class */
+#define OBJ_FRAME       0x84
+#define OBJ_DIMENSION   0x85
+#define OBJ_GRAPHICS    0x86
+#define OBJ_COLOR       0x87    /* followed by its Spectrum colour */
 
 #define REF(p)   ((jint)(unsigned int)(p))
 #define DEREF(r) ((unsigned char *)(unsigned int)(r))
@@ -176,6 +181,19 @@ static unsigned char *heap_top;
 
 static unsigned char system_out[] = { OBJ_PRINTSTREAM };
 static unsigned char system_in[] = { OBJ_INPUTSTREAM };
+static unsigned char graphics[] = { OBJ_GRAPHICS };
+
+/* The constants of Color that the Spectrum has, in the order of its colour numbers */
+static char *color_names[] = {
+    "BLACK", "BLUE", "RED", "MAGENTA", "GREEN", "CYAN", "YELLOW", "WHITE"
+};
+static unsigned char colors[] = {
+    OBJ_COLOR, 0, OBJ_COLOR, 1, OBJ_COLOR, 2, OBJ_COLOR, 3,
+    OBJ_COLOR, 4, OBJ_COLOR, 5, OBJ_COLOR, 6, OBJ_COLOR, 7
+};
+
+static jint canvas;         /* the component added to the frame */
+static unsigned char shown; /* has a frame been shown? */
 
 /* Input read by Scanner: the current line, or 0 when a new one is needed */
 static unsigned char *scan_line;
@@ -194,6 +212,13 @@ static unsigned long powers_of_ten[] = {
 static jint *frame;
 static unsigned char *code;
 
+/*
+ * A method of the class for the interpreter to call next, or -1. A native
+ * sets it to call back into the program, with the arguments in place of its
+ * own.
+ */
+static int called;
+
 /* ---- ROM output ---- */
 
 static void rom_init(void)
@@ -210,6 +235,19 @@ static void rom_putc(unsigned char c) __z88dk_fastcall
 #asm
     ld   a,l
     rst  16        ; stops at scroll? after each screen of new output, as BASIC does
+#endasm
+}
+
+/* Waits for a key, as when a window stays open after main returns on a desktop. */
+static void rom_wait_key(void)
+{
+#asm
+    ld   a,1
+    call $1601          ; CHAN-OPEN, the keyboard
+    ld   hl,23612       ; TV-FLAG
+    res  3,(hl)         ; no change of mode, so that the edit line is not shown
+    set  5,(hl)         ; the lower screen is cleared after the key
+    call $15D4          ; WAIT-KEY
 #endasm
 }
 
@@ -407,9 +445,10 @@ static int member_is(unsigned int index, char *cls, char *name, char *desc)
 
     ref = cp[index];
     nat = cp[u2(ref + 3)];
-    return (cls == 0 || utf8_is(u2(cp[u2(ref + 1)] + 1), cls))
-        && utf8_is(u2(nat + 1), name)
-        && utf8_is(u2(nat + 3), desc);
+    /* The name first, as it differs soonest */
+    return utf8_is(u2(nat + 1), name)
+        && utf8_is(u2(nat + 3), desc)
+        && (cls == 0 || utf8_is(u2(cp[u2(ref + 1)] + 1), cls));
 }
 
 /*
@@ -646,7 +685,9 @@ struct native_class {
 };
 
 static struct native_class classes[] = {
-    { "java/util/Scanner", OBJ_SCANNER }
+    { "java/util/Scanner", OBJ_SCANNER },
+    { "javax/swing/JFrame", OBJ_FRAME },
+    { "java/awt/Dimension", OBJ_DIMENSION }
 };
 
 #define CLASS_COUNT (sizeof(classes) / sizeof(classes[0]))
@@ -910,7 +951,7 @@ static jint native_next_int(jint *args)
     return parse_int(s + start, scan_pos - start);
 }
 
-/* Scanner.close and the constructor of Object */
+/* Scanner.close, constructors of runtime classes, and settings that make no difference here */
 static jint native_nothing(jint *args)
 {
     return 0L;
@@ -1076,6 +1117,125 @@ static jint native_min(jint *args)
     return args[0] < args[1] ? args[0] : args[1];
 }
 
+/* ---- Graphics ---- */
+
+static jint native_add(jint *args)
+{
+    canvas = args[1];
+    return canvas;
+}
+
+/* Clears the screen to the background colour and has the program paint the component. */
+static jint native_set_visible(jint *args)
+{
+    if (args[1] == 0L)
+        return 0L;
+    g_set_attributes();
+    rom_init();
+    shown = 1;
+    g_ink = 0;              /* the default foreground, black */
+    if (canvas != 0L) {
+        called = find_method("paint", "(Ljava/awt/Graphics;)V");
+        args[0] = canvas;
+        args[1] = REF(graphics);
+    }
+    return 0L;
+}
+
+/* As in Java, a null colour leaves the colour as it was. */
+static jint native_set_background(jint *args)
+{
+    if (args[1] != 0L)
+        g_paper = *(DEREF(args[1]) + 1);
+    return 0L;
+}
+
+static jint native_set_color(jint *args)
+{
+    if (args[1] != 0L)
+        g_ink = *(DEREF(args[1]) + 1);
+    return 0L;
+}
+
+/*
+ * Keeps a coordinate within what graphics.c can work with. Written without
+ * v < -2048L, which sccz80 compiles as v < 63488.
+ */
+static int coord(jint v)
+{
+    if ((unsigned long)(v + 2048L) < 4096UL)
+        return (int)v;
+    return v < 0L ? -2048 : 2047;
+}
+
+/* Sets g_x, g_y, g_w and g_h from four int arguments. */
+static void coords(jint *args)
+{
+    g_x = coord(args[0]);
+    g_y = coord(args[1]);
+    g_w = coord(args[2]);
+    g_h = coord(args[3]);
+}
+
+static jint native_draw_line(jint *args)
+{
+    coords(args + 1);
+    g_line();
+    return 0L;
+}
+
+static jint native_draw_rect(jint *args)
+{
+    coords(args + 1);
+    g_draw_rect();
+    return 0L;
+}
+
+static jint native_fill_rect(jint *args)
+{
+    coords(args + 1);
+    g_fill_rect();
+    return 0L;
+}
+
+static jint native_clear_rect(jint *args)
+{
+    static unsigned char ink;
+
+    ink = g_ink;
+    g_ink = g_paper;
+    native_fill_rect(args);
+    g_ink = ink;
+    return 0L;
+}
+
+static jint native_draw_oval(jint *args)
+{
+    coords(args + 1);
+    g_draw_oval();
+    return 0L;
+}
+
+static jint native_fill_oval(jint *args)
+{
+    coords(args + 1);
+    g_fill_oval();
+    return 0L;
+}
+
+static jint native_draw_string(jint *args)
+{
+    unsigned char *s;
+
+    if (args[1] == 0L)
+        die("null pointer");
+    s = DEREF(args[1]);
+    g_x = coord(args[2]);
+    g_y = coord(args[3]);
+    g_text(s + 3, u2(s + 1));
+    return 0L;
+}
+
 static struct native natives[] = {
     { "java/io/PrintStream", "print",    "(I)V",                     2, 0, native_print_int },
     { "java/io/PrintStream", "println",  "(I)V",                     2, 0, native_println_int },
@@ -1095,7 +1255,26 @@ static struct native natives[] = {
     { "java/lang/String",    "valueOf",  "(D)Ljava/lang/String;",    2, 1, native_double_to_string },
     { "java/lang/Math",      "abs",      "(I)I",                     1, 1, native_abs },
     { "java/lang/Math",      "max",      "(II)I",                    2, 1, native_max },
-    { "java/lang/Math",      "min",      "(II)I",                    2, 1, native_min }
+    { "java/lang/Math",      "min",      "(II)I",                    2, 1, native_min },
+    { "javax/swing/JFrame",  "<init>",   "()V",                      1, 0, native_nothing },
+    { "javax/swing/JFrame",  "<init>",   "(Ljava/lang/String;)V",    2, 0, native_nothing },
+    { "javax/swing/JFrame",  "add",      "(Ljava/awt/Component;)Ljava/awt/Component;", 2, 1, native_add },
+    { "javax/swing/JFrame",  "pack",     "()V",                      1, 0, native_nothing },
+    { "javax/swing/JFrame",  "setResizable", "(Z)V",                 2, 0, native_nothing },
+    { "javax/swing/JFrame",  "setDefaultCloseOperation", "(I)V",     2, 0, native_nothing },
+    { "javax/swing/JFrame",  "setVisible", "(Z)V",                   2, 0, native_set_visible },
+    { "java/awt/Dimension",  "<init>",   "(II)V",                    3, 0, native_nothing },
+    { "java/awt/Canvas",     "<init>",   "()V",                      1, 0, native_nothing },
+    { "java/awt/Component",  "setPreferredSize", "(Ljava/awt/Dimension;)V", 2, 0, native_nothing },
+    { "java/awt/Component",  "setBackground", "(Ljava/awt/Color;)V", 2, 0, native_set_background },
+    { "java/awt/Graphics",   "setColor", "(Ljava/awt/Color;)V",      2, 0, native_set_color },
+    { "java/awt/Graphics",   "drawLine", "(IIII)V",                  5, 0, native_draw_line },
+    { "java/awt/Graphics",   "drawRect", "(IIII)V",                  5, 0, native_draw_rect },
+    { "java/awt/Graphics",   "fillRect", "(IIII)V",                  5, 0, native_fill_rect },
+    { "java/awt/Graphics",   "clearRect", "(IIII)V",                 5, 0, native_clear_rect },
+    { "java/awt/Graphics",   "drawOval", "(IIII)V",                  5, 0, native_draw_oval },
+    { "java/awt/Graphics",   "fillOval", "(IIII)V",                  5, 0, native_fill_oval },
+    { "java/awt/Graphics",   "drawString", "(Ljava/lang/String;II)V", 4, 0, native_draw_string }
 };
 
 #define NATIVE_COUNT (sizeof(natives) / sizeof(natives[0]))
@@ -1134,6 +1313,10 @@ static unsigned char *get_static(unsigned int index)
         f = &fields[i];
         if (member_is(index, f->cls, f->name, f->desc))
             return f->object;
+    }
+    for (i = 0; i < 8; i++) {
+        if (member_is(index, "java/awt/Color", color_names[i], "Ljava/awt/Color;"))
+            return colors + i + i;
     }
     die_member("field", index);
     return 0;
@@ -1240,7 +1423,6 @@ static void run(int main_method)
     static unsigned char n;
     static struct native *m;
     static struct caller *c;
-    static int called;      /* the method to call next, an index into the methods of the class */
     static unsigned int locals;
     static unsigned int size;
 
@@ -1471,10 +1653,12 @@ static void run(int main_method)
                 die("null pointer");
             if (called < 0) {
                 a = m->fn(sp);
-                if (m->returns == 1)
-                    *sp = a;
-                sp += m->returns;
-                pc += 3;
+                if (called < 0) {   /* unless it calls back into the program */
+                    if (m->returns == 1)
+                        *sp = a;
+                    sp += m->returns;
+                    pc += 3;
+                }
             }
             break;
         case OP_NEW:
@@ -1523,5 +1707,7 @@ int main(void)
     if (first < 0 || (u2(method_info[first]) & ACC_STATIC) == 0)
         die("no main method");
     run(first);
+    if (shown)
+        rom_wait_key();
     return 0;
 }

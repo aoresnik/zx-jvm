@@ -1,0 +1,35 @@
+Text on a canvas
+
+  drawString("a", x, y)
+
+    caf? ?5 ↑£
+
+                    cut off at t
+
+������� ����
+������� ����
+--- key pressed
+Text on a canvas
+
+  drawString("a", x, y)
+
+    caf? ?5 ↑£
+
+                    cut off at t
+
+������� ����
+������� ����
+
+
+
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1

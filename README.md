@@ -2,7 +2,7 @@
 
 A very small JVM for the ZX Spectrum. It reads a real `.class` file produced by `javac`, loaded from tape as a CODE block, and interprets its bytecode on the Z80.
 
-It is basic because of the constraints of the target machine: currently enough to run programs like [`examples/Fibonacci.java`](examples/Fibonacci.java), which prints the first 15 Fibonacci numbers, to print strings, to read lines and numbers with `Scanner` on the input line at the bottom of the screen, and to calculate with `double`, as [`examples/Loan.java`](examples/Loan.java) does for a loan's monthly payments.
+It is basic because of the constraints of the target machine: currently enough to run programs like [`examples/Fibonacci.java`](examples/Fibonacci.java), which prints the first 15 Fibonacci numbers, to print strings, to read lines and numbers with `Scanner` on the input line at the bottom of the screen, and to calculate with `double`, as [`examples/Loan.java`](examples/Loan.java) does for a loan's monthly payments. It can also draw: a program that paints a `java.awt.Canvas` in a `JFrame`, such as [`examples/Shapes.java`](examples/Shapes.java), runs unchanged on a desktop and on the Spectrum.
 
 Of course it was vibecoded.
 
@@ -17,6 +17,12 @@ Of course it was vibecoded.
 [`Loan.java`](examples/Loan.java), for a 15-year loan:
 
 ![The monthly payment and yearly balances of a 15-year loan on a Spectrum screen](docs/Loan.png)
+
+[`Shapes.java`](examples/Shapes.java), on the Spectrum and, painted by Java2D, on a desktop:
+
+![Lines, rectangles, circles and text drawn on a Spectrum screen](docs/Shapes.png)
+
+![The same drawing painted by Java on a desktop](docs/Shapes-desktop.png)
 
 ## Requirements
 
@@ -53,6 +59,12 @@ make run CLASS=Adder
 
 ```sh
 make run CLASS=Loan
+```
+
+[`examples/Shapes.java`](examples/Shapes.java) draws lines, rectangles, circles and text. It runs as it is on a desktop too, with `java examples/Shapes.java`:
+
+```sh
+make run CLASS=Shapes
 ```
 
 ## Running your own class
@@ -100,6 +112,7 @@ The JVM runs `public static void main(String[])` from one class, and the methods
 | Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `ifnull`, `ifnonnull`, `if_acmpeq`, `if_acmpne`, `goto` |
 | Methods | Static and instance methods of the class, including recursion and constructors, called with `invokestatic`, `invokevirtual` and `invokespecial`; `return`, `ireturn`, `areturn`, `dreturn` |
 | Objects and calls | `new`, `dup`, `dup2`, `pop`, `pop2`, `getstatic`, for the class itself and the runtime classes below |
+| Graphics | A `java.awt.Canvas` shown in a `javax.swing.JFrame`, and the drawing methods of `java.awt.Graphics` listed in [Graphics](#graphics) |
 | Runtime | `System.out.print` and `println` of `int`, `double` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()`; `Integer.parseInt(String)`; `Double.parseDouble(String)`; `Double.toString(double)` and `String.valueOf(double)`; `Math.abs`, `Math.max` and `Math.min` of `int` |
 
 Your methods can take and return `int`, `boolean`, `double`, `String` and objects of your class. Objects of your class have no fields, so they are useful mainly to call instance methods on, as when a class extends a runtime class and overrides its methods. A method your class doesn't declare, but inherits from a runtime class, is looked up among the runtime methods by its name and descriptor.
@@ -171,9 +184,57 @@ To read a `double`, use `Double.parseDouble(in.nextLine())`. `Scanner.nextDouble
 
 `Double.parseDouble` accepts what Java accepts, except for hexadecimal, and rounds correctly. To keep the code small, it supports at most 15 significant digits and powers of ten from -22 to 22, which covers ordinary input. Other numbers stop the program with `JVM: unsupported double`, and text that isn't a number stops it with `JVM: not a double`, where Java would throw `NumberFormatException`.
 
+### Graphics
+
+A program draws as it would in a window on a desktop: its class extends `Canvas` and overrides `paint`, and `main` shows it in a `JFrame`. The canvas is the whole screen, 256 by 192 pixels, with (0, 0) at the top left as in Java:
+
+```java
+public class Shapes extends Canvas {
+    public void paint(Graphics g) {
+        g.setColor(Color.RED);
+        g.drawOval(96, 24, 72, 72);
+        g.drawString("Shapes in Java", 72, 14);
+    }
+
+    public static void main(String[] args) {
+        JFrame frame = new JFrame("Shapes");
+        Shapes shapes = new Shapes();
+        shapes.setBackground(Color.WHITE);
+        shapes.setPreferredSize(new Dimension(256, 192));
+        frame.add(shapes);
+        frame.pack();
+        frame.setResizable(false);
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setVisible(true);
+    }
+}
+```
+
+`setVisible(true)` clears the screen to the background colour and calls `paint` once. When `main` returns, the picture stays on the screen until you press a key, as the window would stay open on a desktop, and then the program returns to BASIC. The window is a `JFrame` rather than AWT's `Frame` because a `Frame` only closes with a listener, which would be a second class.
+
+| Class | Supported |
+|---|---|
+| `JFrame` | Constructors with and without a title; `add`, `pack`, `setResizable`, `setDefaultCloseOperation`, `setVisible`. Only `setVisible` does anything on the Spectrum |
+| `Canvas` | Its constructor, `setBackground`, and `setPreferredSize` with a `new Dimension(w, h)`, which makes no difference here |
+| `Graphics` | `setColor`, `drawLine`, `drawRect`, `fillRect`, `clearRect`, `drawOval`, `fillOval`, `drawString` |
+| `Color` | `BLACK`, `BLUE`, `RED`, `MAGENTA`, `GREEN`, `CYAN`, `YELLOW` and `WHITE`: the Spectrum's colours, in bright, as Java's are at full strength |
+
+There is no `drawPoint` in Java: `g.drawLine(x, y, x, y)` draws one pixel. Circles are ovals with equal width and height.
+
+The pixels are those Java2D would draw, with some differences:
+
+- **Lines and rectangles** are the same, pixel for pixel, including where Bresenham's algorithm has to choose between two pixels.
+- **Filled ovals** are nearly the same, and **outlined ovals** differ by a pixel here and there, because Java2D draws them as Bezier curves.
+- **Text** uses the Spectrum's 8 by 8 font, with the baseline under its seventh pixel line, so it is wider than on a desktop. Characters that aren't ASCII are drawn as `?`, as when printing.
+- **Colour** belongs to each 8 by 8 cell rather than to each pixel. Drawing sets the ink of the cells it touches, so where two colours share a cell, the later one wins. Drawing in the background colour clears pixels instead, as on a desktop.
+- **Coordinates** outside -2048 to 2047 are moved to the nearest of those, so shapes that far off the screen are drawn differently.
+- **`paint`** is called once. On a desktop, it is called again whenever the window needs it, so it should draw the same each time; animation is unsupported.
+
+On a real Spectrum, a line across the screen takes about 70 ms, a circle 96 pixels across about 0.35 s outlined or 0.25 s filled, filling the whole screen about 0.4 s, and text about 4 ms a character. `Shapes` takes about 3 seconds in all. The first call of each method from a call site takes another 30 to 50 ms, to look the method up by name.
+
 ### Unsupported features
 
-Everything else is unsupported, including other types such as `long` and `float`, `char` output, string operations, arrays, fields, interfaces and other classes of your own, including nested, inner and anonymous classes. There is no garbage collector, verifier, exception handling or loading of other classes.
+Everything else is unsupported, including other types such as `long` and `float`, `char` output, string operations, arrays, fields, interfaces and other classes of your own, including nested, inner and anonymous classes, and the rest of AWT and Swing, such as `new Color(r, g, b)`, `repaint()` and events. There is no garbage collector, verifier, exception handling or loading of other classes.
 
 Unsupported features stop the program with an error rather than misbehaving:
 
@@ -190,7 +251,7 @@ Limits:
 
 - 256 constant pool entries, and each distinct string takes two
 - 32 methods in the class
-- About 20 KB for the class file, the heap and the frames of the methods being run together: everything between the end of the JVM and the user-defined graphics. A small recursive method can call itself about 800 levels deep before the program stops with `JVM: stack overflow`, where Java would throw `StackOverflowError`. Each line read takes its length plus 3 bytes, and memory is never freed, so a program that reads many lines eventually stops with `JVM: out of memory`.
+- About 17 KB for the class file, the heap and the frames of the methods being run together: everything between the end of the JVM and the user-defined graphics. A small recursive method can call itself about 700 levels deep before the program stops with `JVM: stack overflow`, where Java would throw `StackOverflowError`. Each line read takes its length plus 3 bytes, and memory is never freed, so a program that reads many lines eventually stops with `JVM: out of memory`.
 
 ## How it works
 
@@ -199,7 +260,7 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 ```basic
 10 CLEAR 25599
 20 LOAD ""CODE
-30 LOAD ""CODE 44401
+30 LOAD ""CODE 48021
 40 RANDOMIZE USR 25600
 ```
 
@@ -208,10 +269,12 @@ The address in line 30 is where the JVM ends, so it changes when the JVM does.
 | Address | Contents |
 |---|---|
 | Up to 25599 | BASIC: the loader, the input line and the machine stack, with about 1.8 KB to spare |
-| 25600 | JVM, about 19 KB, including its variables |
+| 25600 | JVM, about 22 KB, including its variables |
 | After the JVM | Class file |
 | After the class file, up to 65367 | Heap, growing up, and the frames of running methods, growing down from 65367 |
 | 65368 | User-defined graphics, as usual |
+
+The screen, at 16384, is the canvas, so graphics take no memory beyond their code.
 
 The JVM's address is `JVM_ADDR` in the Makefile.
 
@@ -219,7 +282,9 @@ The JVM parses the constant pool, lists the methods of the class, and interprets
 
 The `double` arithmetic is in [`src/double.c`](src/double.c), modelled on [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html). The operations, such as addition with its special cases, are in C and work on numbers unpacked into a sign, an exponent and a 64-bit significand. The primitives below them, such as unpacking, packing, rounding and arithmetic on significands, are in Z80 code, because sccz80 has no 64-bit integer type and compiles 32-bit code large and slow: the Z80 code took the JVM from 21 KB to 19 KB. The primitives also have C versions, using `uint64_t`, so that the host test can check the operations. To print a `double`, it scales the number by a power of ten to between 10^14 and 10^15, using 64-bit significands for the powers of ten, and rounds that to an integer, which gives the 15 digits.
 
-Every string has the layout of a `CONSTANT_Utf8` entry. A constant string is its entry in the class file, so it needs no copying, and a line read with `Scanner` is allocated on the heap. `System.out`, `System.in` and `Scanner` objects are one byte that identifies their class.
+Graphics are in [`src/graphics.c`](src/graphics.c). Setting a pixel and setting a horizontal run of pixels, a byte at a time, are Z80 code, along with the inner loops of lines and text and the edge of an oval on each line, which uses an integer square root. The rest, such as clipping and the outline of a rectangle, is C. A native method can't call Java code itself, so `setVisible` asks the interpreter to call `paint` next, with the canvas and the `Graphics` object in place of its own arguments, as if the program had called it there.
+
+Every string has the layout of a `CONSTANT_Utf8` entry. A constant string is its entry in the class file, so it needs no copying, and a line read with `Scanner` is allocated on the heap. `System.out`, `System.in`, `Scanner` and the other runtime objects are one byte that identifies their class; a `Color` is followed by a byte with its Spectrum colour.
 
 The runtime is written in C, in three tables in `src/zxjvm.c`:
 
@@ -246,6 +311,7 @@ The JVM is compiled with sccz80, which miscompiled some valid C in this project.
 | `e <= 0`, for an `int` `e` | Tests the sign with a carry flag left over from the previous instruction | `e < 1` |
 | `1UL << n` | Computes `n << 1` | Shifts by a constant, or a variable shifted (`x >> n` works) |
 | `P[i]`, for a constant pointer `P` such as `((long *)0xC000)` | Ignores `i` | A pointer variable |
+| `v < -2048L`, comparing a `long` with a negative constant | Compares with 63488, losing the sign of the constant's high half | Adding 2048 and comparing as unsigned |
 | `jp` or `ret` from the `#asm` body of a `__z88dk_fastcall` function | Not a miscompilation, but a trap: the function pushes its argument on entry, so the return goes to that address | `call` the routine, and let the compiler's code return |
 
 ## Tests
@@ -261,9 +327,11 @@ When the program reads input, the script types the next line of `tests/<name>.in
 
 The test compares the text with a file in `tests/expected/`, and a failure prints a diff. A program that runs for more than 60 seconds of emulated time without reaching a prompt also fails.
 
+A program that uses `java.awt` is also compared with Java2D. When the JVM waits for a key after showing graphics, `tap2text.py --screen` saves the screen memory. [`tests/Render.java`](tests/Render.java) then creates the program's `Canvas` on the desktop's JVM, without running its `main`, and paints it on an image in the same background colour. [`tests/compare_graphics.py`](tests/compare_graphics.py) counts the pixels that only one of them drew, and the cells where the Spectrum's ink differs from the one colour Java drew there. The counts must equal those in `tests/expected/<name>.pixels`, so that any change shows, and an image of the differences is left in `build/tests/<name>-diff.png`.
+
 | Test | What it covers |
 |---|---|
-| `Fibonacci`, `HelloWorld`, `Adder`, `Loan` | The example programs |
+| `Fibonacci`, `HelloWorld`, `Adder`, `Loan`, `Shapes` | The example programs |
 | `Edge` | Int limits, overflow, negative constants, branches |
 | `Arithmetic` | Multiplication, division and remainder with every sign and overflow, divisors over 16 bits, `ineg`, the static runtime methods, `parseInt("")` |
 | `Doubles` | Each `double` operation, compared with the same expression on constants, which `javac` evaluates itself; infinities, NaN, `-0.0`, subnormals, conversions, `parseDouble` |
@@ -279,6 +347,9 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 | `BadMethod` | Error for an unsupported method, `println(char)` |
 | `BadInput` | Error for a number out of the range of `int` |
 | `StackOverflow` | Error for recursion that never ends |
+| `GraphicsLines` | Lines at every slope and rectangles, partly off the screen, `clearRect` and drawing in the background colour; the same pixels as Java2D |
+| `GraphicsOvals` | Outlined and filled ovals and circles of many sizes, partly off the screen |
+| `GraphicsText` | Text in the character grid, which `tap2text.py` reads back, non-ASCII characters, clipping at the edge, a dark background, a method called from `paint` |
 | `BadDouble` | Error for a number with a decimal comma |
 | `DivideByZero` | Error for division by zero |
 | `NoMain` | Error for a class without `main` |

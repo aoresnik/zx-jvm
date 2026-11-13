@@ -18,9 +18,9 @@ VENV_STAMP = $(VENV)/installed
 
 all: $(TAPE) $(JVM_TAPE)
 
-$(BUILD)/zxjvm.bin: src/zxjvm.c src/double.c src/double.h
+$(BUILD)/zxjvm.bin: src/zxjvm.c src/double.c src/double.h src/graphics.c src/graphics.h
 	mkdir -p $(BUILD)
-	zcc +zx -subtype=none -O3 -pragma-define:CRT_ORG_CODE=$(JVM_ADDR) -o $@ src/zxjvm.c src/double.c
+	zcc +zx -subtype=none -O3 -pragma-define:CRT_ORG_CODE=$(JVM_ADDR) -o $@ src/zxjvm.c src/double.c src/graphics.c
 	rm -f zcc_opt.def
 
 $(BUILD)/$(CLASS).class: $(JAVA_DIR)/$(CLASS).java
