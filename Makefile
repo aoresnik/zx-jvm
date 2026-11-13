@@ -21,7 +21,7 @@ all: $(TAPE) $(JVM_TAPE)
 
 $(BUILD)/zxjvm.bin: src/zxjvm.c src/double.c src/double.h
 	mkdir -p $(BUILD)
-	zcc +zx -subtype=none -pragma-define:CRT_ORG_CODE=$(JVM_ADDR) -o $@ src/zxjvm.c src/double.c
+	zcc +zx -subtype=none -O3 -pragma-define:CRT_ORG_CODE=$(JVM_ADDR) -o $@ src/zxjvm.c src/double.c
 	rm -f zcc_opt.def
 	@size=$$(wc -c < $@); if [ $$size -gt $$(($(CLASS_ADDR) - $(JVM_ADDR))) ]; then \
 	    echo "$@ is $$size bytes and would overlap the class at $(CLASS_ADDR)" >&2; rm -f $@; exit 1; fi
@@ -53,7 +53,7 @@ DOUBLE_HOST_TEST = $(BUILD)/tests/double_host_test
 
 $(DOUBLE_DRIVER): tests/double/z80_driver.c src/double.c src/double.h
 	mkdir -p $(dir $@)
-	zcc +zx -subtype=none -o $@ tests/double/z80_driver.c src/double.c
+	zcc +zx -subtype=none -O3 -o $@ tests/double/z80_driver.c src/double.c
 	rm -f zcc_opt.def
 
 $(DOUBLE_HOST_TEST): tests/double/host_test.c src/double.c src/double.h

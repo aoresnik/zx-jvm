@@ -23,6 +23,8 @@
 #pragma output CLIB_EXIT_STACK_SIZE = 0
 #pragma output CLIB_MALLOC_HEAP_SIZE = 0
 #pragma output CLIB_STDIO_HEAP_SIZE = 0
+/* Output goes through the ROM, so leave out z88dk's console driver and its font */
+#pragma redirect fputc_cons_generic = _no_console
 
 #include <stdlib.h>
 #include <string.h>
@@ -186,6 +188,11 @@ static void rom_putc(unsigned char c) __z88dk_fastcall
     ld   a,l
     rst  16        ; stops at scroll? after each screen of new output, as BASIC does
 #endasm
+}
+
+/* Stands in for z88dk's console driver, which nothing calls */
+void no_console(void)
+{
 }
 
 /* ---- ROM input, done as the ROM's INPUT LINE does it ---- */
