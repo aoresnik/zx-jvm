@@ -1,0 +1,24 @@
+144
+321
+2.5
+11.0
+first
+second
+610
+200
+Hello, Spectrum
+5 4 3 2 1 go
+42
+8 0.5
+same object
+7 1.25
+
+
+
+
+
+
+
+
+
+0 OK, 40:1

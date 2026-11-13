@@ -1,0 +1,24 @@
+Recursing forever
+JVM: stack overflow
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+0 OK, 40:1

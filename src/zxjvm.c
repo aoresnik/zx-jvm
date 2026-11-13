@@ -2,10 +2,11 @@
  * zxjvm - a very small JVM for the ZX Spectrum.
  *
  * Runs public static void main(String[]) of a single .class file that has
- * already been loaded into memory right after this program. Bytecode is interpreted
- * directly from the class file image; there is no verifier, no garbage
- * collector and no class loading. Runtime classes and methods are implemented
- * in C, listed in classes[], fields[] and natives[].
+ * already been loaded into memory right after this program, and the methods
+ * it calls. Bytecode is interpreted directly from the class file image; there
+ * is no verifier, no garbage collector and no class loading. Runtime classes
+ * and methods are implemented in C, listed in classes[], fields[] and
+ * natives[].
  *
  * A reference is the 16-bit address of an object, held in a 32-bit slot, and
  * null is 0. A double takes two slots, the high word first, and its
@@ -15,8 +16,9 @@
  * TAG_UTF8 for a String or an OBJ_* kind otherwise.
  *
  * Memory map: this program at JVM_ADDR in the Makefile, then the class file,
- * then the heap up to the user-defined graphics. The program's statics are
- * part of its binary, so the class starts where the binary ends.
+ * then the heap, growing up, and the frames of the Java methods, growing down
+ * from the user-defined graphics. The program's statics are part of its
+ * binary, so the class starts where the binary ends.
  */
 
 /* CRT_ORG_CODE, the address of this program, is set by the Makefile */
@@ -41,8 +43,8 @@ extern unsigned char _BSS_END_tail[];          /* the end of this program, from 
 #define STKBOT     ((unsigned int *)23651)
 #define TKN_TABLE  ((unsigned char *)0x0095)    /* keywords, last letter + 0x80 */
 
-#define MAX_CP     256  /* constant pool entries */
-#define MAX_FRAME  64   /* locals + operand stack, in 32-bit slots */
+#define MAX_CP      256 /* constant pool entries */
+#define MAX_METHODS 32  /* methods in the class */
 
 #define ACC_STATIC 0x0008
 
@@ -54,6 +56,7 @@ extern unsigned char _BSS_END_tail[];          /* the end of this program, from 
 #define OBJ_PRINTSTREAM 0x80
 #define OBJ_INPUTSTREAM 0x81
 #define OBJ_SCANNER     0x82
+#define OBJ_OWN         0x83    /* an object of the program's own class */
 
 #define REF(p)   ((jint)(unsigned int)(p))
 #define DEREF(r) ((unsigned char *)(unsigned int)(r))
@@ -138,6 +141,9 @@ extern unsigned char _BSS_END_tail[];          /* the end of this program, from 
 #define OP_IF_ACMPEQ     0xA5
 #define OP_IF_ACMPNE     0xA6
 #define OP_GOTO          0xA7
+#define OP_IRETURN       0xAC
+#define OP_DRETURN       0xAF
+#define OP_ARETURN       0xB0
 #define OP_RETURN        0xB1
 #define OP_GETSTATIC     0xB2
 #define OP_INVOKEVIRTUAL 0xB6
@@ -151,8 +157,20 @@ typedef long jint;      /* sccz80: int is 16 bits, long is 32 bits */
 
 static unsigned char *cp[MAX_CP];
 static unsigned int cp_count;
-static unsigned char resolved[MAX_CP];  /* Methodref -> natives[] index + 1 */
-static jint frame[MAX_FRAME];
+static unsigned int this_class;         /* the Class entry of the program's class */
+
+/*
+ * Methodref -> natives[] index + 1, or OWN_METHOD + an index into the
+ * methods of the class
+ */
+static unsigned char resolved[MAX_CP];
+#define OWN_METHOD 0x80
+
+/* The methods of the class */
+static unsigned char method_count;
+static unsigned char *method_info[MAX_METHODS];
+static unsigned char *method_code[MAX_METHODS];    /* the Code attribute, or 0 */
+static unsigned char method_args[MAX_METHODS];     /* argument slots, including any receiver */
 
 static unsigned char *heap_top;
 
@@ -168,10 +186,13 @@ static unsigned long powers_of_ten[] = {
     10000UL, 1000UL, 100UL, 10UL
 };
 
-/* The Code attribute of main */
+/*
+ * The running method: its locals, followed by the caller's state and its
+ * operand stack, and its bytecode. The frames of the methods it was called
+ * from are above it in memory.
+ */
+static jint *frame;
 static unsigned char *code;
-static unsigned int max_stack;
-static unsigned int max_locals;
 
 /* ---- ROM output ---- */
 
@@ -378,7 +399,7 @@ static int utf8_is(unsigned int index, char *s)
     return len == 0 && *s == 0;
 }
 
-/* Does a Fieldref/Methodref pool entry name this class member? */
+/* Does a Fieldref/Methodref pool entry name this class member? A cls of 0 matches any class. */
 static int member_is(unsigned int index, char *cls, char *name, char *desc)
 {
     unsigned char *ref;
@@ -386,7 +407,7 @@ static int member_is(unsigned int index, char *cls, char *name, char *desc)
 
     ref = cp[index];
     nat = cp[u2(ref + 3)];
-    return utf8_is(u2(cp[u2(ref + 1)] + 1), cls)
+    return (cls == 0 || utf8_is(u2(cp[u2(ref + 1)] + 1), cls))
         && utf8_is(u2(nat + 1), name)
         && utf8_is(u2(nat + 3), desc);
 }
@@ -455,33 +476,53 @@ static unsigned char *skip_attribute(unsigned char *p)
     return p + 6 + u2(p + 4);
 }
 
-/* Leaves the code of main in code, max_stack and max_locals; returns the end of the class file. */
-static unsigned char *find_main(unsigned char *p)
+/* Counts the argument slots of a method descriptor. */
+static unsigned char count_slots(unsigned int index)
 {
-    unsigned int methods;
-    unsigned int attrs;
-    int is_main;
+    unsigned char *p;
+    unsigned char n;
 
+    p = cp[index] + 4;          /* after the tag, the length and the ( */
+    n = 0;
+    while (*p != ')') {
+        if (*p == 'D' || *p == 'J')
+            n++;
+        n++;
+        while (*p == '[')
+            p++;
+        if (*p == 'L')
+            while (*p != ';')
+                p++;
+        p++;
+    }
+    return n;
+}
+
+/* Lists the methods of the class; returns the end of the class file. */
+static unsigned char *parse_methods(unsigned char *p)
+{
+    unsigned int attrs;
+    unsigned char i;
+
+    this_class = u2(p + 2);
     p += 6;                     /* access_flags, this_class, super_class */
     p += 2 + 2 * u2(p);         /* interfaces */
     if (u2(p) != 0)
         die("fields not supported");
     p += 2;
 
-    methods = u2(p);
+    method_count = u2(p);
     p += 2;
-    while (methods-- != 0) {
-        is_main = (u2(p) & ACC_STATIC) != 0
-            && utf8_is(u2(p + 2), "main")
-            && utf8_is(u2(p + 4), "([Ljava/lang/String;)V");
+    if (method_count > MAX_METHODS)
+        die("too many methods");
+    for (i = 0; i < method_count; i++) {
+        method_info[i] = p;
+        method_args[i] = count_slots(u2(p + 4)) + ((u2(p) & ACC_STATIC) == 0);
         attrs = u2(p + 6);
         p += 8;
         while (attrs-- != 0) {
-            if (is_main && utf8_is(u2(p), "Code")) {
-                max_stack = u2(p + 6);
-                max_locals = u2(p + 8);
-                code = p + 14;
-            }
+            if (utf8_is(u2(p), "Code"))
+                method_code[i] = p;
             p = skip_attribute(p);
         }
     }
@@ -490,10 +531,18 @@ static unsigned char *find_main(unsigned char *p)
     p += 2;
     while (attrs-- != 0)
         p = skip_attribute(p);
-
-    if (code == 0)
-        die("no main method");
     return p;
+}
+
+/* The index of a method of the class with this name and descriptor, or -1 */
+static int find_method(char *name, char *desc)
+{
+    unsigned char i;
+
+    for (i = 0; i < method_count; i++)
+        if (utf8_is(u2(method_info[i] + 2), name) && utf8_is(u2(method_info[i] + 4), desc))
+            return i;
+    return -1;
 }
 
 /* ---- Heap and strings ---- */
@@ -502,7 +551,7 @@ static unsigned char *alloc(unsigned int size)
 {
     unsigned char *p;
 
-    if (size > (unsigned int)(HEAP_END - heap_top))
+    if (size > (unsigned int)((unsigned char *)frame - heap_top))
         die("out of memory");
     p = heap_top;
     heap_top += size;
@@ -861,7 +910,8 @@ static jint native_next_int(jint *args)
     return parse_int(s + start, scan_pos - start);
 }
 
-static jint native_close(jint *args)
+/* Scanner.close and the constructor of Object */
+static jint native_nothing(jint *args)
 {
     return 0L;
 }
@@ -1037,7 +1087,8 @@ static struct native natives[] = {
     { "java/util/Scanner",   "<init>",   "(Ljava/io/InputStream;)V", 2, 0, native_scanner_init },
     { "java/util/Scanner",   "nextLine", "()Ljava/lang/String;",     1, 1, native_next_line },
     { "java/util/Scanner",   "nextInt",  "()I",                      1, 1, native_next_int },
-    { "java/util/Scanner",   "close",    "()V",                      1, 0, native_close },
+    { "java/util/Scanner",   "close",    "()V",                      1, 0, native_nothing },
+    { "java/lang/Object",    "<init>",   "()V",                      1, 0, native_nothing },
     { "java/lang/Integer",   "parseInt", "(Ljava/lang/String;)I",    1, 1, native_parse_int },
     { "java/lang/Double",    "parseDouble", "(Ljava/lang/String;)D", 1, 2, native_parse_double },
     { "java/lang/Double",    "toString", "(D)Ljava/lang/String;",    2, 1, native_double_to_string },
@@ -1049,17 +1100,20 @@ static struct native natives[] = {
 
 #define NATIVE_COUNT (sizeof(natives) / sizeof(natives[0]))
 
-/* Allocates an object of a class in classes[], given its Class pool entry. */
+/* Allocates an object of the program's class or of a class in classes[], given its Class pool entry. */
 static unsigned char *new_object(unsigned int index)
 {
     unsigned int name;
     unsigned char i;
     unsigned char *obj;
 
+    obj = alloc(1);
+    *obj = OBJ_OWN;
+    if (index == this_class)
+        return obj;
     name = u2(cp[index] + 1);
     for (i = 0; i < CLASS_COUNT; i++) {
         if (utf8_is(name, classes[i].name)) {
-            obj = alloc(1);
             *obj = classes[i].kind;
             return obj;
         }
@@ -1085,23 +1139,38 @@ static unsigned char *get_static(unsigned int index)
     return 0;
 }
 
-/* Looks a Methodref up in natives[] once, then remembers the result. */
-static struct native *resolve_method(unsigned int index)
+/*
+ * Looks a Methodref up once, then remembers the result in resolved[]. A
+ * method of the program's class is looked up among its methods first and
+ * then, as one it inherits, in natives[] by name and descriptor alone.
+ */
+static unsigned char resolve_method(unsigned int index)
 {
     unsigned char i;
+    unsigned char *ref;
+    unsigned char *nat;
+    unsigned char own;
     struct native *m;
 
     if (resolved[index] == 0) {
+        ref = cp[index];
+        own = u2(ref + 1) == this_class;
+        if (own) {
+            /* javac never repeats a Utf8 entry, so equal strings have equal indices */
+            nat = cp[u2(ref + 3)];
+            for (i = 0; i < method_count; i++) {
+                if (u2(method_info[i] + 2) == u2(nat + 1) && u2(method_info[i] + 4) == u2(nat + 3))
+                    return resolved[index] = OWN_METHOD + i;
+            }
+        }
         for (i = 0; i < NATIVE_COUNT; i++) {
             m = &natives[i];
-            if (member_is(index, m->cls, m->name, m->desc)) {
-                resolved[index] = i + 1;
-                return m;
-            }
+            if (member_is(index, own ? 0 : m->cls, m->name, m->desc))
+                return resolved[index] = i + 1;
         }
         die_member("method", index);
     }
-    return &natives[resolved[index] - 1];
+    return resolved[index];
 }
 
 /* ---- Interpreter ---- */
@@ -1143,25 +1212,65 @@ static int branch_taken(unsigned char op, jint a, jint b)
     return a <= b;      /* OP_IFLE, OP_IF_ICMPLE */
 }
 
-static void run(void)
+/*
+ * The state of the caller, kept in the frame of the method it called, after
+ * that method's locals
+ */
+struct caller {
+    unsigned char *at;      /* its invoke instruction, or 0 for main */
+    jint *result;           /* its operand stack without the arguments, where the result goes */
+    jint *locals;
+    unsigned char *bytecode;
+};
+
+#define CALLER_SLOTS (sizeof(struct caller) / sizeof(jint))
+
+static jint main_args;      /* arrays do not exist here, so main gets null */
+
+/* Runs main and the methods it calls, until main returns. */
+static void run(int main_method)
 {
-    unsigned char *pc;
-    unsigned char *e;
-    jint *sp;
-    jint a;
-    jint b;
-    unsigned char op;
-    unsigned char n;
-    struct native *m;
+    /* Static, as sccz80 reaches statics with shorter and faster code than locals */
+    static unsigned char *pc;
+    static unsigned char *e;
+    static jint *sp;
+    static jint a;
+    static jint b;
+    static unsigned char op;
+    static unsigned char n;
+    static struct native *m;
+    static struct caller *c;
+    static int called;      /* the method to call next, an index into the methods of the class */
+    static unsigned int locals;
+    static unsigned int size;
 
-    if (max_stack + max_locals > MAX_FRAME)
-        die("frame too big");
-
-    frame[0] = 0L;      /* args: arrays do not exist here, so main gets null */
-    sp = frame + max_locals;
-    pc = code;
+    frame = (jint *)HEAP_END;
+    pc = 0;
+    sp = &main_args;
+    called = main_method;
 
     for (;;) {
+        if (called >= 0) {
+            /* Its arguments are on the operand stack, from sp */
+            e = method_code[called];
+            if (e == 0)
+                die("abstract method");
+            locals = u2(e + 8);                     /* max_locals */
+            size = locals + CALLER_SLOTS + u2(e + 6);  /* and max_stack */
+            if (size * 4 > (unsigned int)((unsigned char *)frame - heap_top))
+                die("stack overflow");
+            c = (struct caller *)(frame - size + locals);
+            c->locals = frame;
+            frame -= size;
+            memcpy(frame, sp, method_args[called] * 4);
+            c->at = pc;
+            c->result = sp;
+            c->bytecode = code;
+            code = e + 14;
+            pc = code;
+            sp = (jint *)(c + 1);
+            called = -1;
+        }
         op = *pc;
         switch (op) {
         case OP_ACONST_NULL:
@@ -1334,31 +1443,39 @@ static void run(void)
         case OP_GOTO:
             pc += (int)u2(pc + 1);
             break;
-        case OP_RETURN:
-            return;
+        case OP_IRETURN: case OP_ARETURN: case OP_DRETURN: case OP_RETURN:
+            n = op == OP_RETURN ? 0 : op == OP_DRETURN ? 2 : 1;
+            c = (struct caller *)(frame + u2(code - 6));    /* after max_locals locals */
+            if (c->at == 0)
+                return;
+            memcpy(c->result, sp - n, n * 4);
+            sp = c->result + n;
+            pc = c->at + 3;
+            frame = c->locals;
+            code = c->bytecode;
+            break;
         case OP_GETSTATIC:
             *sp++ = REF(get_static(u2(pc + 1)));
             pc += 3;
             break;
-        case OP_INVOKEVIRTUAL: case OP_INVOKESPECIAL:
-            m = resolve_method(u2(pc + 1));
-            sp = &sp[-(int)m->slots];
-            if (*sp == 0L)
+        case OP_INVOKEVIRTUAL: case OP_INVOKESPECIAL: case OP_INVOKESTATIC:
+            n = resolve_method(u2(pc + 1));
+            if (n & OWN_METHOD) {
+                called = n - OWN_METHOD;
+                sp = &sp[-(int)method_args[called]];
+            } else {
+                m = &natives[n - 1];
+                sp = &sp[-(int)m->slots];
+            }
+            if (op != OP_INVOKESTATIC && *sp == 0L)
                 die("null pointer");
-            a = m->fn(sp);
-            if (m->returns == 1)
-                *sp = a;
-            sp += m->returns;
-            pc += 3;
-            break;
-        case OP_INVOKESTATIC:
-            m = resolve_method(u2(pc + 1));
-            sp = &sp[-(int)m->slots];
-            a = m->fn(sp);
-            if (m->returns == 1)
-                *sp = a;
-            sp += m->returns;
-            pc += 3;
+            if (called < 0) {
+                a = m->fn(sp);
+                if (m->returns == 1)
+                    *sp = a;
+                sp += m->returns;
+                pc += 3;
+            }
             break;
         case OP_NEW:
             *sp++ = REF(new_object(u2(pc + 1)));
@@ -1389,17 +1506,22 @@ static void run(void)
             print_str(" at pc ");
             print_int((jint)(int)(pc - code));
             print_newline();
-            return;
+            exit(1);
         }
     }
 }
 
 int main(void)
 {
+    int first;
+
     rom_init();
     if (u2(CLASS_ADDR) != 0xCAFE || u2(CLASS_ADDR + 2) != 0xBABE)
         die("no class file");
-    heap_top = find_main(parse_constant_pool(CLASS_ADDR + 8));
-    run();
+    heap_top = parse_methods(parse_constant_pool(CLASS_ADDR + 8));
+    first = find_method("main", "([Ljava/lang/String;)V");
+    if (first < 0 || (u2(method_info[first]) & ACC_STATIC) == 0)
+        die("no main method");
+    run(first);
     return 0;
 }

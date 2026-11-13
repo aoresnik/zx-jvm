@@ -89,7 +89,7 @@ The class always loads right after the JVM, whatever address its block was saved
 
 ## What is supported
 
-The JVM runs `public static void main(String[])` from one class.
+The JVM runs `public static void main(String[])` from one class, and the methods of that class it calls.
 
 | Area | Supported |
 |---|---|
@@ -98,9 +98,11 @@ The JVM runs `public static void main(String[])` from one class.
 | Arithmetic | `iadd`, `isub`, `imul`, `idiv`, `irem`, `ineg`, with 32-bit wraparound as in Java; `dadd`, `dsub`, `dmul`, `ddiv`, `dneg` |
 | Conversions and comparisons | `i2d`, `d2i`, `dcmpl`, `dcmpg` |
 | Branches | `ifeq`, `ifne`, `iflt`, `ifge`, `ifgt`, `ifle`, all `if_icmp` forms, `ifnull`, `ifnonnull`, `if_acmpeq`, `if_acmpne`, `goto` |
-| Return | `return` |
-| Objects and calls | `new`, `dup`, `dup2`, `pop`, `pop2`, `invokevirtual`, `invokespecial`, `invokestatic`, `getstatic`, only for the runtime classes below |
+| Methods | Static and instance methods of the class, including recursion and constructors, called with `invokestatic`, `invokevirtual` and `invokespecial`; `return`, `ireturn`, `areturn`, `dreturn` |
+| Objects and calls | `new`, `dup`, `dup2`, `pop`, `pop2`, `getstatic`, for the class itself and the runtime classes below |
 | Runtime | `System.out.print` and `println` of `int`, `double` and `String`, and `println()`; `new Scanner(System.in)` with `nextLine()`, `nextInt()` and `close()`; `Integer.parseInt(String)`; `Double.parseDouble(String)`; `Double.toString(double)` and `String.valueOf(double)`; `Math.abs`, `Math.max` and `Math.min` of `int` |
+
+Your methods can take and return `int`, `boolean`, `double`, `String` and objects of your class. Objects of your class have no fields, so they are useful mainly to call instance methods on, as when a class extends a runtime class and overrides its methods. A method your class doesn't declare, but inherits from a runtime class, is looked up among the runtime methods by its name and descriptor.
 
 Strings are constants or lines read with `Scanner`. They can be stored in local variables and compared with `==` and `!=`. As in Java, equal string literals in a class are the same object. Constant expressions such as `"a" + "b"` work because `javac` joins them, but `"x = " + x` needs `invokedynamic` and is unsupported; print the parts separately instead.
 
@@ -171,7 +173,7 @@ To read a `double`, use `Double.parseDouble(in.nextLine())`. `Scanner.nextDouble
 
 ### Unsupported features
 
-Everything else is unsupported, including other types such as `long` and `float`, `char` output, string operations, arrays, your own objects, fields, and calling your own methods. There is no garbage collector, verifier, exception handling or loading of other classes.
+Everything else is unsupported, including other types such as `long` and `float`, `char` output, string operations, arrays, fields, interfaces and other classes of your own, including nested, inner and anonymous classes. There is no garbage collector, verifier, exception handling or loading of other classes.
 
 Unsupported features stop the program with an error rather than misbehaving:
 
@@ -187,8 +189,8 @@ The Spectrum still shows `0 OK` after an error, because the JVM always returns t
 Limits:
 
 - 256 constant pool entries, and each distinct string takes two
-- 64 slots for local variables and the operand stack together
-- About 20 KB for the class file and the heap together: everything between the end of the JVM and the user-defined graphics. Each line read takes its length plus 3 bytes, and memory is never freed, so a program that reads many lines eventually stops with `JVM: out of memory`.
+- 32 methods in the class
+- About 20 KB for the class file, the heap and the frames of the methods being run together: everything between the end of the JVM and the user-defined graphics. A small recursive method can call itself about 800 levels deep before the program stops with `JVM: stack overflow`, where Java would throw `StackOverflowError`. Each line read takes its length plus 3 bytes, and memory is never freed, so a program that reads many lines eventually stops with `JVM: out of memory`.
 
 ## How it works
 
@@ -197,7 +199,7 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 ```basic
 10 CLEAR 25599
 20 LOAD ""CODE
-30 LOAD ""CODE 44093
+30 LOAD ""CODE 44401
 40 RANDOMIZE USR 25600
 ```
 
@@ -206,14 +208,14 @@ The address in line 30 is where the JVM ends, so it changes when the JVM does.
 | Address | Contents |
 |---|---|
 | Up to 25599 | BASIC: the loader, the input line and the machine stack, with about 1.8 KB to spare |
-| 25600 | JVM, about 18 KB, including its variables |
+| 25600 | JVM, about 19 KB, including its variables |
 | After the JVM | Class file |
-| After the class file, up to 65367 | Heap |
+| After the class file, up to 65367 | Heap, growing up, and the frames of running methods, growing down from 65367 |
 | 65368 | User-defined graphics, as usual |
 
 The JVM's address is `JVM_ADDR` in the Makefile.
 
-The JVM parses the constant pool, finds `main` and interprets its bytecode directly from the class file in memory. Java's `int` is held in a 32-bit `long`, and a reference in the same slot holds a 16-bit address, with `null` as 0. A `double` takes two slots, as in Java.
+The JVM parses the constant pool, lists the methods of the class, and interprets the bytecode of `main` directly from the class file in memory. Calling a method of the class gives it a frame below the caller's, holding its local variables, the caller's state and its operand stack. The interpreter is a single loop: a call and a return only change which frame and bytecode it works on, so the depth of calls doesn't use the Z80's stack, which has little room below BASIC. Java's `int` is held in a 32-bit `long`, and a reference in the same slot holds a 16-bit address, with `null` as 0. A `double` takes two slots, as in Java.
 
 The `double` arithmetic is in [`src/double.c`](src/double.c), modelled on [Berkeley SoftFloat](http://www.jhauser.us/arithmetic/SoftFloat.html). The operations, such as addition with its special cases, are in C and work on numbers unpacked into a sign, an exponent and a 64-bit significand. The primitives below them, such as unpacking, packing, rounding and arithmetic on significands, are in Z80 code, because sccz80 has no 64-bit integer type and compiles 32-bit code large and slow: the Z80 code took the JVM from 21 KB to 19 KB. The primitives also have C versions, using `uint64_t`, so that the host test can check the operations. To print a `double`, it scales the number by a power of ten to between 10^14 and 10^15, using 64-bit significands for the powers of ten, and rounds that to an integer, which gives the 15 digits.
 
@@ -270,11 +272,13 @@ The test compares the text with a file in `tests/expected/`, and a failure print
 | `Strings` | String output, local variables, `null`, non-ASCII and wrapping |
 | `LongString` | The `scroll?` prompt caused only by wrapped text |
 | `References` | `null` checks and comparing references |
+| `Methods` | Static and instance methods with each type of argument and result, recursion, constructors |
 | `Input` | `Scanner` lines and numbers, the echo, DELETE, a keyword, what `nextInt()` leaves for `nextLine()` |
 | `InputInts` | Int limits, signs, leading zeros and spaces in input |
 | `BadOpcode` | Error for an unsupported opcode |
 | `BadMethod` | Error for an unsupported method, `println(char)` |
 | `BadInput` | Error for a number out of the range of `int` |
+| `StackOverflow` | Error for recursion that never ends |
 | `BadDouble` | Error for a number with a decimal comma |
 | `DivideByZero` | Error for division by zero |
 | `NoMain` | Error for a class without `main` |
