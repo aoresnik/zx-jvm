@@ -12,6 +12,12 @@
 
 #include <stdint.h>
 
+/* What a double is, as d_kind returns it */
+#define KIND_ZERO   0
+#define KIND_FINITE 1
+#define KIND_INF    2
+#define KIND_NAN    3
+
 void d_add(uint32_t *r, uint32_t *a, uint32_t *b);
 void d_sub(uint32_t *r, uint32_t *a, uint32_t *b);
 void d_mul(uint32_t *r, uint32_t *a, uint32_t *b);
@@ -23,6 +29,8 @@ int32_t d_to_int(uint32_t *a);
 
 /* -1, 0 or 1, or nan_result if either is NaN, as Java's dcmpl and dcmpg */
 int d_cmp(uint32_t *a, uint32_t *b, int nan_result);
+
+int d_kind(uint32_t *a);
 
 /*
  * Writes the first 15 significant digits of |a|, rounded to nearest, as the

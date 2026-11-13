@@ -18,11 +18,6 @@
 
 #include "double.h"
 
-#define KIND_ZERO   0
-#define KIND_FINITE 1
-#define KIND_INF    2
-#define KIND_NAN    3
-
 #define SIGN 0x80               /* the sign of an unpacked number */
 
 /* value = sig * 2^(exp - 63), with bit 63 of sig set when the kind is KIND_FINITE */
@@ -906,7 +901,12 @@ static void sig_div(unsigned char *a, unsigned char *b)
 
 #endif
 
-/* ---- Operations ---- */
+/*
+ * ---- Operations ----
+ *
+ * Locals are static, as sccz80 reaches statics with shorter code; none of
+ * these functions is reentrant.
+ */
 
 /* Zero or, if inf, infinity, with a sign */
 static void special(uint32_t *r, unsigned char sign, unsigned char inf)
@@ -945,10 +945,10 @@ static void divide(struct unpacked *u, struct unpacked *v)
 
 static void add_signed(uint32_t *r, uint32_t *a, uint32_t *b, unsigned char negate_b)
 {
-    struct unpacked *p;
-    struct unpacked *q;
-    unsigned char ka;
-    unsigned char kb;
+    static struct unpacked *p;
+    static struct unpacked *q;
+    static unsigned char ka;
+    static unsigned char kb;
 
     ka = unpack(&ua, a);
     kb = unpack(&ub, b);
@@ -1014,8 +1014,8 @@ void d_sub(uint32_t *r, uint32_t *a, uint32_t *b)
 
 void d_mul(uint32_t *r, uint32_t *a, uint32_t *b)
 {
-    unsigned char ka;
-    unsigned char kb;
+    static unsigned char ka;
+    static unsigned char kb;
 
     ka = unpack(&ua, a);
     kb = unpack(&ub, b);
@@ -1041,8 +1041,8 @@ void d_mul(uint32_t *r, uint32_t *a, uint32_t *b)
 
 void d_div(uint32_t *r, uint32_t *a, uint32_t *b)
 {
-    unsigned char ka;
-    unsigned char kb;
+    static unsigned char ka;
+    static unsigned char kb;
 
     ka = unpack(&ua, a);
     kb = unpack(&ub, b);
@@ -1073,7 +1073,7 @@ void d_neg(uint32_t *r, uint32_t *a)
 
 void d_from_int(uint32_t *r, int32_t i)
 {
-    uint32_t v;
+    static uint32_t v;
 
     if (i == 0) {
         special(r, 0, 0);
@@ -1090,8 +1090,8 @@ void d_from_int(uint32_t *r, int32_t i)
 /* As Java's (int): truncates towards zero, saturates, and NaN becomes 0. */
 int32_t d_to_int(uint32_t *a)
 {
-    unsigned char kind;
-    uint32_t v;
+    static unsigned char kind;
+    static uint32_t v;
 
     kind = unpack(&ua, a);
     if (kind == KIND_NAN || kind == KIND_ZERO)
@@ -1107,9 +1107,9 @@ int32_t d_to_int(uint32_t *a)
 
 int d_cmp(uint32_t *a, uint32_t *b, int nan_result)
 {
-    unsigned char ka;
-    unsigned char kb;
-    unsigned char less;
+    static unsigned char ka;
+    static unsigned char kb;
+    static unsigned char less;
 
     ka = unpack(&ua, a);
     kb = unpack(&ub, b);
@@ -1131,6 +1131,11 @@ int d_cmp(uint32_t *a, uint32_t *b, int nan_result)
     else
         less = sig_cmp(ua.sig, ub.sig) < 0;
     return less != (ua.sign != 0) ? -1 : 1;
+}
+
+int d_kind(uint32_t *a)
+{
+    return unpack(&ua, a);
 }
 
 /* ---- Decimal digits ---- */
@@ -1179,8 +1184,8 @@ static unsigned char e14_sig[8] = { 0x00, 0x00, 0x00, 0x80, 0xF4, 0x20, 0xE6, 0x
  */
 static void scale10(int p)
 {
-    unsigned char i;
-    unsigned char negative;
+    static unsigned char i;
+    static unsigned char negative;
 
     negative = p < 0;
     if (negative)
@@ -1214,10 +1219,10 @@ static int too_small(void)              /* ub < 10^14 */
 
 int d_to_decimal(uint32_t *a, char *digits)
 {
-    unsigned char *n;
-    int k;
-    unsigned char i;
-    char digit;
+    static unsigned char *n;
+    static int k;
+    static unsigned char i;
+    static char digit;
 
     unpack(&ua, a);
 

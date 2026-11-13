@@ -661,22 +661,23 @@ static void put_str(char *s)
  */
 static unsigned char format_double(jint *v)
 {
-    unsigned long high;
-    int k;          /* the power of ten of the first digit */
-    int low;        /* and of the last one written */
-    int exp;
-    int p;
+    /* Static, as sccz80 reaches statics with shorter code than locals */
+    static int kind;
+    static int k;           /* the power of ten of the first digit */
+    static int low;         /* and of the last one written */
+    static int exp;
+    static int p;
 
     text_end = double_text;
-    high = (unsigned long)v[0] & 0x7FFFFFFFUL;
-    if (high > 0x7FF00000UL || (high == 0x7FF00000UL && v[1] != 0L))
+    kind = d_kind(D(v));
+    if (kind == KIND_NAN)
         put_str("NaN");
     else {
-        if (v[0] < 0L)
+        if (((unsigned char *)v)[3] & 0x80)     /* the sign bit, in the high word */
             put('-');
-        if (high == 0x7FF00000UL)
+        if (kind == KIND_INF)
             put_str("Infinity");
-        else if (high == 0UL && v[1] == 0L)
+        else if (kind == KIND_ZERO)
             put_str("0.0");
         else {
             k = d_to_decimal(D(v), double_digits);
@@ -893,17 +894,18 @@ static int starts_with(unsigned char *s, unsigned int i, unsigned int len, char 
  */
 static void parse_double(jint *r, unsigned char *s, unsigned int len)
 {
-    jint ten[2];
-    jint digit[2];
-    unsigned int i;
-    unsigned char neg;
-    unsigned char dot;
-    unsigned char seen;         /* a digit */
-    unsigned char digits;       /* significant digits in r */
-    unsigned char exp_neg;
-    unsigned char d;
-    int exp10;
-    int e;
+    /* Static, as sccz80 reaches statics with shorter code than locals */
+    static jint ten[2];
+    static jint digit[2];
+    static unsigned int i;
+    static unsigned char neg;
+    static unsigned char dot;
+    static unsigned char seen;         /* a digit */
+    static unsigned char digits;       /* significant digits in r */
+    static unsigned char exp_neg;
+    static unsigned char d;
+    static int exp10;
+    static int e;
 
     while (len != 0 && s[len - 1] <= ' ')  /* as String.trim() */
         len--;

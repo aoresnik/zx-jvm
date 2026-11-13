@@ -204,7 +204,7 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 | Address | Contents |
 |---|---|
 | Up to 25599 | BASIC: the loader, the input line and the machine stack, with about 1.8 KB to spare |
-| 25600 | JVM, about 19 KB; the build fails if it would reach the class |
+| 25600 | JVM, about 18 KB; the build fails if it would reach the class |
 | 49152 | Class file |
 | After the class file, up to 65367 | Heap |
 | 65368 | User-defined graphics, as usual |
