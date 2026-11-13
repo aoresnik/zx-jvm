@@ -85,7 +85,7 @@ Then do one of the following:
 - **Swap tapes:** load `zx-jvm.tap`. At the prompt, open `MyProgram.tap` (F7 in Fuse) and press a key.
 - **Join the tapes:** run `cat build/zx-jvm.tap MyProgram.tap > combined.tap` and load the result. You still press a key at the prompt.
 
-The class always loads at 49152, whatever address its block was saved with.
+The class always loads right after the JVM, whatever address its block was saved with.
 
 ## What is supported
 
@@ -188,7 +188,7 @@ Limits:
 
 - 256 constant pool entries, and each distinct string takes two
 - 64 slots for local variables and the operand stack together
-- Just under 16 KB for the class file and the heap together. Each line read takes its length plus 3 bytes, and memory is never freed, so a program that reads many lines eventually stops with `JVM: out of memory`.
+- About 20 KB for the class file and the heap together: everything between the end of the JVM and the user-defined graphics. Each line read takes its length plus 3 bytes, and memory is never freed, so a program that reads many lines eventually stops with `JVM: out of memory`.
 
 ## How it works
 
@@ -197,15 +197,17 @@ The tape holds a BASIC loader, the JVM and, on complete tapes, the class:
 ```basic
 10 CLEAR 25599
 20 LOAD ""CODE
-30 LOAD ""CODE 49152
+30 LOAD ""CODE 44093
 40 RANDOMIZE USR 25600
 ```
+
+The address in line 30 is where the JVM ends, so it changes when the JVM does.
 
 | Address | Contents |
 |---|---|
 | Up to 25599 | BASIC: the loader, the input line and the machine stack, with about 1.8 KB to spare |
-| 25600 | JVM, about 18 KB; the build fails if it would reach the class |
-| 49152 | Class file |
+| 25600 | JVM, about 18 KB, including its variables |
+| After the JVM | Class file |
 | After the class file, up to 65367 | Heap |
 | 65368 | User-defined graphics, as usual |
 

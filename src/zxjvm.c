@@ -2,7 +2,7 @@
  * zxjvm - a very small JVM for the ZX Spectrum.
  *
  * Runs public static void main(String[]) of a single .class file that has
- * already been loaded into memory at CLASS_ADDR. Bytecode is interpreted
+ * already been loaded into memory right after this program. Bytecode is interpreted
  * directly from the class file image; there is no verifier, no garbage
  * collector and no class loading. Runtime classes and methods are implemented
  * in C, listed in classes[], fields[] and natives[].
@@ -14,8 +14,9 @@
  * made at run time are allocated on the heap. The first byte of an object is
  * TAG_UTF8 for a String or an OBJ_* kind otherwise.
  *
- * Memory map: this program at JVM_ADDR in the Makefile, 49152 the class
- * file, then the heap up to the user-defined graphics.
+ * Memory map: this program at JVM_ADDR in the Makefile, then the class file,
+ * then the heap up to the user-defined graphics. The program's statics are
+ * part of its binary, so the class starts where the binary ends.
  */
 
 /* CRT_ORG_CODE, the address of this program, is set by the Makefile */
@@ -31,7 +32,8 @@
 
 #include "double.h"
 
-#define CLASS_ADDR ((unsigned char *)49152)
+extern unsigned char _BSS_END_tail[];          /* the end of this program, from the linker */
+#define CLASS_ADDR _BSS_END_tail
 #define HEAP_END   ((unsigned char *)65368)     /* the user-defined graphics */
 
 /* System variables and ROM data */
@@ -1396,7 +1398,7 @@ int main(void)
 {
     rom_init();
     if (u2(CLASS_ADDR) != 0xCAFE || u2(CLASS_ADDR + 2) != 0xBABE)
-        die("no class file at 49152");
+        die("no class file");
     heap_top = find_main(parse_constant_pool(CLASS_ADDR + 8));
     run();
     return 0;

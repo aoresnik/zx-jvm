@@ -7,9 +7,10 @@ import java.nio.file.Path;
 /**
  * Builds a Spectrum tape image holding a BASIC loader, the JVM and optionally a
  * class file. Without one, the loader waits for a key, so that the tape can be
- * changed, and then expects the class as the next CODE block.
+ * changed, and then expects the class as the next CODE block. The class is
+ * loaded right after the JVM, where the JVM looks for it.
  *
- * Usage: java MkTap.java out.tap jvm.bin jvmAddr classAddr [class.class blockName]
+ * Usage: java MkTap.java out.tap jvm.bin jvmAddr [class.class blockName]
  */
 public class MkTap {
     private static final int TYPE_PROGRAM = 0;
@@ -31,27 +32,28 @@ public class MkTap {
     private static final int TOKEN_CLEAR = 0xFD;
 
     private static final int AUTOSTART_LINE = 10;
+    private static final int HEAP_END = 65368;     // HEAP_END in zxjvm.c, the user-defined graphics
 
     public static void main(String[] args) throws IOException {
-        if (args.length != 4 && args.length != 6) {
-            System.err.println("usage: MkTap out.tap jvm.bin jvmAddr classAddr [class.class blockName]");
+        if (args.length != 3 && args.length != 5) {
+            System.err.println("usage: MkTap out.tap jvm.bin jvmAddr [class.class blockName]");
             System.exit(2);
         }
         byte[] jvm = Files.readAllBytes(Path.of(args[1]));
         int jvmAddr = Integer.parseInt(args[2]);
-        int classAddr = Integer.parseInt(args[3]);
+        int classAddr = jvmAddr + jvm.length;
 
-        byte[] basic = loader(jvmAddr, classAddr, args.length == 4);
-        if (jvmAddr + jvm.length > classAddr) {
-            throw new IOException("JVM overlaps the class file");
-        }
+        byte[] basic = loader(jvmAddr, classAddr, args.length == 3);
 
         ByteArrayOutputStream tap = new ByteArrayOutputStream();
         writeFile(tap, TYPE_PROGRAM, "zxjvm", basic, AUTOSTART_LINE, basic.length);
         writeFile(tap, TYPE_CODE, "zxjvm", jvm, jvmAddr, 32768);
-        if (args.length == 6) {
-            byte[] cls = Files.readAllBytes(Path.of(args[4]));
-            writeFile(tap, TYPE_CODE, args[5], cls, classAddr, 32768);
+        if (args.length == 5) {
+            byte[] cls = Files.readAllBytes(Path.of(args[3]));
+            if (classAddr + cls.length > HEAP_END) {
+                throw new IOException("the class file is " + cls.length + " bytes and leaves no room for the heap");
+            }
+            writeFile(tap, TYPE_CODE, args[4], cls, classAddr, 32768);
         }
         Files.write(Path.of(args[0]), tap.toByteArray());
     }

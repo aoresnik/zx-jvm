@@ -5,8 +5,7 @@ CLASS    ?= Fibonacci
 JAVA_DIR ?= examples
 BUILD    ?= build
 
-JVM_ADDR   = 25600
-CLASS_ADDR = 49152
+JVM_ADDR = 25600
 
 export ZCCCFG ?= $(dir $(shell command -v zcc))../share/z88dk/lib/config/
 
@@ -23,18 +22,16 @@ $(BUILD)/zxjvm.bin: src/zxjvm.c src/double.c src/double.h
 	mkdir -p $(BUILD)
 	zcc +zx -subtype=none -O3 -pragma-define:CRT_ORG_CODE=$(JVM_ADDR) -o $@ src/zxjvm.c src/double.c
 	rm -f zcc_opt.def
-	@size=$$(wc -c < $@); if [ $$size -gt $$(($(CLASS_ADDR) - $(JVM_ADDR))) ]; then \
-	    echo "$@ is $$size bytes and would overlap the class at $(CLASS_ADDR)" >&2; rm -f $@; exit 1; fi
 
 $(BUILD)/$(CLASS).class: $(JAVA_DIR)/$(CLASS).java
 	mkdir -p $(BUILD)
 	javac -d $(BUILD) $<
 
 $(TAPE): $(BUILD)/zxjvm.bin $(BUILD)/$(CLASS).class tools/MkTap.java
-	java tools/MkTap.java $@ $(BUILD)/zxjvm.bin $(JVM_ADDR) $(CLASS_ADDR) $(BUILD)/$(CLASS).class $(CLASS)
+	java tools/MkTap.java $@ $(BUILD)/zxjvm.bin $(JVM_ADDR) $(BUILD)/$(CLASS).class $(CLASS)
 
 $(JVM_TAPE): $(BUILD)/zxjvm.bin tools/MkTap.java
-	java tools/MkTap.java $@ $(BUILD)/zxjvm.bin $(JVM_ADDR) $(CLASS_ADDR)
+	java tools/MkTap.java $@ $(BUILD)/zxjvm.bin $(JVM_ADDR)
 
 run: $(TAPE)
 	fuse --machine 48 --auto-load --tape $(TAPE)
